@@ -1,0 +1,40 @@
+{
+  "runs_per_model": 3,
+  "models": [
+    "mistralai/voxtral-mini-transcribe",
+    "openai/whisper-large-v3-turbo"
+  ],
+  "samples": [
+    {
+      "id": "quiet_english",
+      "file": "generated/quiet_english.mp3",
+      "scenario": "Synthetic female English, normal pace",
+      "expected_text": "Hello Bella, what's the weather today?"
+    },
+    {
+      "id": "tanglish",
+      "file": "generated/tanglish.mp3",
+      "scenario": "Synthetic Indian female Tanglish, normal pace",
+      "manual_accuracy_review": true,
+      "expected_text": "Dei Bella, inniku enna plan?"
+    },
+    {
+      "id": "fast_speech",
+      "file": "generated/fast_speech.mp3",
+      "scenario": "Synthetic female English, fast pace",
+      "expected_text": "Bella, remind me to call my friend tomorrow."
+    },
+    {
+      "id": "male_speaker",
+      "file": "generated/male_speaker.mp3",
+      "scenario": "Synthetic male English, normal pace",
+      "expected_text": "Turn on the lights in the living room."
+    },
+    {
+      "id": "female_speaker",
+      "file": "generated/female_speaker.mp3",
+      "scenario": "Synthetic female English, normal pace",
+      "expected_text": "Bella, remind me to call my friend tomorrow."
+    }
+  ]
+}

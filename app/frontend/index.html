@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bella AI</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <div class="workspace">
+      <div class="side-stack">
+        <aside class="side-panel side-left" aria-label="Bella capabilities">
+          <p class="side-kicker">BELLA</p>
+          <h2>Always nearby.</h2>
+          <p class="side-copy">A calm little companion for quick thoughts, voice notes, and late-night ideas.</p>
+          <div class="side-item"><span></span> Voice ready</div>
+          <div class="side-item"><span></span> Memory on</div>
+        </aside>
+        <figure class="pet-art pet-cat">
+          <span class="pet-halo" aria-hidden="true"></span>
+          <span class="spark spark-one" aria-hidden="true">✦</span>
+          <span class="spark spark-two" aria-hidden="true">·</span>
+          <img src="/assets/bella-cat-transparent.png" alt="Bella's anime cat companion" />
+        </figure>
+      </div>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="avatar" aria-hidden="true">B</div>
+          <div>
+            <p class="eyebrow">YOUR CLOUD COMPANION</p>
+            <h1>Bella<span>.</span></h1>
+          </div>
+        </div>
+        <div id="status" class="status" aria-live="polite"><i></i> Connecting…</div>
+      </header>
+      <div class="mobile-pets" aria-label="Bella's little companions">
+        <button class="mobile-pet mobile-pet-cat" type="button" data-pet-sound aria-label="Pet the Bella cat">
+          <img src="/assets/bella-cat-transparent.png" alt="" />
+        </button>
+        <button class="mobile-pet mobile-pet-fox" type="button" data-pet-sound aria-label="Pet the sleepy Bella fox">
+          <img src="/assets/bella-fox-transparent.png" alt="" />
+        </button>
+        <div id="pet-speech" class="pet-speech" role="status" aria-live="polite" hidden></div>
+      </div>
+      <section id="chat" class="chat" aria-label="Conversation history" tabindex="0">
+        <div class="welcome">
+          <div class="welcome-mark">✦</div>
+          <p>Hey, I’m Bella. I’m glad you’re here — what’s on your mind?</p>
+          <div class="quick-prompts" aria-label="Conversation starters">
+            <button type="button" data-prompt="I want to talk about my day.">Talk about my day</button>
+            <button type="button" data-prompt="Help me think through an idea.">Think through an idea</button>
+            <button type="button" data-prompt="Tell me something interesting.">Surprise me</button>
+          </div>
+        </div>
+      </section>
+      <form id="text-form" class="text-form">
+        <input id="text-input" aria-label="Message Bella" autocomplete="off" placeholder="Message Bella…" />
+        <button type="submit" aria-label="Send message">Send <span>↗</span></button>
+      </form>
+      <section class="controls" aria-label="Voice controls">
+        <button id="start" class="secondary" aria-label="Connect Bella">Connect</button>
+        <button id="push-to-talk" class="talk" disabled aria-label="Hold to talk"><span class="mic">●</span> Hold to talk</button>
+        <button id="stop" class="secondary stop" disabled>Stop</button>
+      </section>
+      <button id="play-audio" class="audio-resume" hidden>▶ Play Bella’s reply</button>
+      <audio id="player"></audio>
+    </main>
+      <div class="side-stack">
+        <aside class="side-panel side-right" aria-label="Bella session details">
+          <p class="side-kicker">HOW IT FEELS</p>
+          <div class="feature"><b>Listen</b><span>Speak naturally</span></div>
+          <div class="feature"><b>Think</b><span>Replies stream live</span></div>
+          <div class="feature"><b>Speak</b><span>Audio follows along</span></div>
+        </aside>
+        <figure class="pet-art pet-fox">
+          <span class="pet-halo" aria-hidden="true"></span>
+          <span class="spark spark-one" aria-hidden="true">✦</span>
+          <span class="spark spark-two" aria-hidden="true">✧</span>
+          <img src="/assets/bella-fox-transparent.png" alt="Bella's sleeping fox companion" />
+        </figure>
+      </div>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

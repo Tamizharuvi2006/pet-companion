@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+tests
+benchmarks/
+app/storage/audio/*
+app/storage/uploads/*
+!app/storage/audio/.gitkeep
+!app/storage/uploads/.gitkeep
+README.md

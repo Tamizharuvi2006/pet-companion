@@ -1,0 +1,46 @@
+{
+  "runs_per_model": 3,
+  "models": [
+    "mistralai/voxtral-mini-transcribe",
+    "openai/whisper-large-v3-turbo"
+  ],
+  "samples": [
+    {
+      "id": "quiet_english",
+      "file": "clips/quiet_english.webm",
+      "scenario": "Quiet room, normal English",
+      "expected_text": "Hello Bella, what's the weather today?"
+    },
+    {
+      "id": "fan_noise_english",
+      "file": "clips/fan_noise_english.webm",
+      "scenario": "Fan or steady background noise, normal English",
+      "expected_text": "Turn on the lights in the living room."
+    },
+    {
+      "id": "tanglish",
+      "file": "clips/tanglish.webm",
+      "scenario": "Tanglish, normal pace",
+      "manual_accuracy_review": true,
+      "expected_text": "Dei Bella, inniku enna plan?"
+    },
+    {
+      "id": "fast_speech",
+      "file": "clips/fast_speech.webm",
+      "scenario": "Fast English speech",
+      "expected_text": "Bella, remind me to call my friend tomorrow."
+    },
+    {
+      "id": "male_speaker",
+      "file": "clips/male_speaker.webm",
+      "scenario": "Male speaker, natural pace",
+      "expected_text": "Hello Bella, what's the weather today?"
+    },
+    {
+      "id": "female_speaker",
+      "file": "clips/female_speaker.webm",
+      "scenario": "Female speaker, natural pace",
+      "expected_text": "Hello Bella, what's the weather today?"
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+#pragma once
+
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+
+#ifndef BELLA_WIFI_SSID
+#define BELLA_WIFI_SSID ""
+#endif
+#ifndef BELLA_WIFI_PASSWORD
+#define BELLA_WIFI_PASSWORD ""
+#endif
+#ifndef BELLA_BACKEND_WS_URL
+#define BELLA_BACKEND_WS_URL "ws://192.168.1.10:8000/ws/device"
+#endif
+#ifndef BELLA_DEVICE_ID
+#define BELLA_DEVICE_ID "device-001"
+#endif
+#ifndef BELLA_DEVICE_TOKEN
+#define BELLA_DEVICE_TOKEN ""
+#endif
+
+#define BELLA_FIRMWARE_VERSION "0.1.0"
+#define BELLA_AUDIO_SAMPLE_RATE_HZ 16000
+#define BELLA_AUDIO_FRAME_SAMPLES 640
+#define BELLA_AUDIO_FRAME_BYTES (BELLA_AUDIO_FRAME_SAMPLES * 2)
+#define BELLA_PROTOCOL_VERSION 1
+
+#define BELLA_PIN_TFT_CS 5
+#define BELLA_PIN_TFT_RESET 4
+#define BELLA_PIN_TFT_DC 2
+#define BELLA_PIN_TFT_MOSI 23
+#define BELLA_PIN_TFT_SCK 18
+#define BELLA_PIN_TFT_MISO 19
+#define BELLA_PIN_I2S_BCLK 26
+#define BELLA_PIN_I2S_WS 25
+#define BELLA_PIN_I2S_MIC_DATA 34
+#define BELLA_PIN_I2S_SPEAKER_DATA 22
+#define BELLA_PIN_TOUCH_1 32
+#define BELLA_PIN_TOUCH_2 33
+#define BELLA_PIN_TOUCH_3 14
+#define BELLA_PIN_TOUCH_4 27
+#define BELLA_PIN_VL53L0X_SDA 16
+#define BELLA_PIN_VL53L0X_SCL 17
+#define BELLA_PIN_SERVO_1 13
+// GPIO12/MTDI is sampled as a flash-voltage strap before firmware starts.
+#define BELLA_PIN_SERVO_2 12
+
+#ifndef BELLA_TOUCH_ACTIVE_HIGH
+#define BELLA_TOUCH_ACTIVE_HIGH 1
+#endif
+#ifndef BELLA_SERVO_ENABLED
+#define BELLA_SERVO_ENABLED 0
+#endif
+#ifndef BELLA_SERVO2_GPIO12_ENABLED
+#define BELLA_SERVO2_GPIO12_ENABLED 0
+#endif
+#ifndef BELLA_GPIO12_STRAP_SAFE_CONFIRMED
+#define BELLA_GPIO12_STRAP_SAFE_CONFIRMED 0
+#endif
+#if BELLA_SERVO2_GPIO12_ENABLED && !BELLA_SERVO_ENABLED
+#error "Enable BELLA_SERVO_ENABLED before enabling Servo 2 on GPIO12"
+#endif
+#if BELLA_SERVO2_GPIO12_ENABLED && !BELLA_GPIO12_STRAP_SAFE_CONFIRMED
+#error "GPIO12 Servo 2 requires exact board/flash and reset-pull verification first"
+#endif
+#ifndef BELLA_TFT_CONTROLLER_CONFIRMED
+#define BELLA_TFT_CONTROLLER_CONFIRMED 0
+#endif
+#ifndef BELLA_CAMERA_PROFILE_AI_THINKER
+#define BELLA_CAMERA_PROFILE_AI_THINKER 0
+#endif

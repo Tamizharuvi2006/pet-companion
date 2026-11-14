@@ -1,0 +1,30 @@
+services:
+  bella-cloud:
+    build: .
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+    env_file:
+      - .env
+    volumes:
+      - bella-audio:/app/app/storage/audio
+    restart: unless-stopped
+
+  # Phase 2 services: declared now so their future adapters have stable targets.
+  redis:
+    image: redis:7-alpine
+    profiles: ["memory"]
+    ports: ["6379:6379"]
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["memory"]
+    environment:
+      POSTGRES_USER: bella
+      POSTGRES_PASSWORD: bella
+      POSTGRES_DB: bella
+    ports: ["5432:5432"]
+    volumes: ["bella-postgres:/var/lib/postgresql/data"]
+
+volumes:
+  bella-audio:
+  bella-postgres:
