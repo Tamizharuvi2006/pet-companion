@@ -4,7 +4,7 @@ import logging
 from time import perf_counter
 
 import aiofiles
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 from app.api.chat import generate_reply
 from app.api.deps import ai, context, memory, tts, whisper
@@ -15,6 +15,7 @@ from app.services.ai_service import AIService
 from app.services.context_service import ContextService
 from app.services.openrouter_stt_service import OpenRouterSTTService
 from app.services.tts_service import TTSService
+from app.services.request_limits import CapacityExceeded
 
 router = APIRouter(tags=["speech"])
 logger = logging.getLogger(__name__)
@@ -43,22 +44,28 @@ async def persist_upload(audio: UploadFile) -> Path:
 
 @router.post("/stt")
 async def stt(
+    request: Request,
     audio: UploadFile = File(...), service: OpenRouterSTTService = Depends(whisper)
 ) -> dict[str, str]:
-    path = await persist_upload(audio)
-    started = perf_counter()
     try:
-        text = await service.transcribe(path)
-        logger.info("voice_timing stage=whisper seconds=%.3f", perf_counter() - started)
-        return {"text": text}
-    except RuntimeError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    finally:
-        path.unlink(missing_ok=True)
+        async with request.app.state.voice_turn_gate.slot():
+            path = await persist_upload(audio)
+            started = perf_counter()
+            try:
+                text = await service.transcribe(path)
+                logger.info("voice_timing stage=whisper seconds=%.3f", perf_counter() - started)
+                return {"text": text}
+            except RuntimeError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            finally:
+                path.unlink(missing_ok=True)
+    except CapacityExceeded as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @router.post("/talk", response_model=TalkResponse)
 async def talk(
+    request: Request,
     audio: UploadFile = File(...),
     session_id: str | None = Form(default=None),
     stt_service: OpenRouterSTTService = Depends(whisper),
@@ -67,23 +74,29 @@ async def talk(
     context_service: ContextService = Depends(context),
     tts_service: TTSService = Depends(tts),
 ) -> TalkResponse:
-    turn_started = perf_counter()
-    path = await persist_upload(audio)
-    whisper_started = perf_counter()
     try:
-        transcript = await stt_service.transcribe(path)
-        logger.info("voice_timing stage=whisper seconds=%.3f", perf_counter() - whisper_started)
-    except RuntimeError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    finally:
-        path.unlink(missing_ok=True)
+        async with request.app.state.voice_turn_gate.slot():
+            if session_id is not None and len(session_id) > 128:
+                raise HTTPException(status_code=422, detail="Session ID is too long")
+            turn_started = perf_counter()
+            path = await persist_upload(audio)
+            whisper_started = perf_counter()
+            try:
+                transcript = await stt_service.transcribe(path)
+                logger.info("voice_timing stage=whisper seconds=%.3f", perf_counter() - whisper_started)
+            except RuntimeError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            finally:
+                path.unlink(missing_ok=True)
 
-    result: ChatResponse = await generate_reply(transcript, session_id, short_term, ai_service, context_service)
-    tts_started = perf_counter()
-    try:
-        audio_url = await tts_service.synthesize(result.reply)
-        logger.info("voice_timing stage=tts seconds=%.3f", perf_counter() - tts_started)
-    except RuntimeError as error:
+            result: ChatResponse = await generate_reply(transcript, session_id, short_term, ai_service, context_service)
+            tts_started = perf_counter()
+            try:
+                audio_url = await tts_service.synthesize(result.reply)
+                logger.info("voice_timing stage=tts seconds=%.3f", perf_counter() - tts_started)
+            except RuntimeError as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+            logger.info("voice_timing stage=total seconds=%.3f", perf_counter() - turn_started)
+            return TalkResponse(session_id=result.session_id, transcript=transcript, reply=result.reply, audio_url=audio_url)
+    except CapacityExceeded as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
-    logger.info("voice_timing stage=total seconds=%.3f", perf_counter() - turn_started)
-    return TalkResponse(session_id=result.session_id, transcript=transcript, reply=result.reply, audio_url=audio_url)

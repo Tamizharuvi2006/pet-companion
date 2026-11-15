@@ -9,16 +9,24 @@ import aiofiles
 import edge_tts
 
 from app.core.config import Settings
+from app.services.provider_budget import reserve_provider_call
+from app.services.provider_budget import ProviderBudgetError
 from app.services.tts_service import TTSAudioChunk
 from app.services.voice_trace import mark_voice_stage
+from app.services.request_limits import provider_slot
+from app.services.mp3_stream import first_valid_mp3_prefix
 
 logger = logging.getLogger(__name__)
 
 
 class EdgeTTSService:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, provider_semaphore: asyncio.Semaphore | None = None
+    ) -> None:
+        self._settings = settings
         self._voice = settings.tts_voice
         self._audio_dir = settings.audio_dir
+        self._provider_semaphore = provider_semaphore
 
     async def load(self) -> None:
         """Edge TTS has no model that needs local startup work."""
@@ -72,34 +80,55 @@ class EdgeTTSService:
             rate=rate or "+0%",
             pitch=pitch or "+0Hz",
         )
-        try:
-            async for event in communicate.stream():
-                if event.get("type") != "audio":
-                    continue
-                data = event.get("data")
-                if not isinstance(data, bytes) or not data:
-                    continue
-                total_bytes += len(data)
-                if first_audio:
-                    mark_voice_stage(
-                        "edge_first_audio_bytes",
-                        duration_seconds=perf_counter() - started,
-                        provider="edge",
-                        bytes=len(data),
+        async def encoded_audio() -> AsyncIterator[bytes]:
+            nonlocal total_bytes, first_audio
+            try:
+                async with provider_slot(self._provider_semaphore):
+                    await reserve_provider_call(
+                        "edge_tts",
+                        required=getattr(self._settings, "voice_test_enabled", False),
                     )
-                    first_audio = False
-                yield TTSAudioChunk(provider="edge", data=data)
-        except asyncio.CancelledError:
-            mark_voice_stage("edge_stream_cancelled", provider="edge", bytes=total_bytes)
-            raise
-        except Exception as error:
-            logger.exception("Edge TTS stream failed")
-            raise RuntimeError("Could not synthesize speech") from error
-        if first_audio:
-            raise RuntimeError("Edge TTS returned no audio")
+                    async for event in communicate.stream():
+                        if event.get("type") != "audio":
+                            continue
+                        data = event.get("data")
+                        if not isinstance(data, bytes) or not data:
+                            continue
+                        total_bytes += len(data)
+                        if first_audio:
+                            mark_voice_stage(
+                                "edge_first_audio_bytes",
+                                duration_seconds=perf_counter() - started,
+                                provider="edge",
+                                bytes=len(data),
+                            )
+                            first_audio = False
+                        yield data
+            except asyncio.CancelledError:
+                mark_voice_stage("edge_stream_cancelled", provider="edge", bytes=total_bytes)
+                raise
+            except ProviderBudgetError:
+                raise
+            except Exception as error:
+                logger.exception("Edge TTS stream failed")
+                raise RuntimeError("Could not synthesize speech") from error
+            if first_audio:
+                raise RuntimeError("Edge TTS returned no audio")
+            mark_voice_stage(
+                "edge_stream_complete",
+                duration_seconds=perf_counter() - started,
+                provider="edge",
+                bytes=total_bytes,
+            )
+
+        encoded = encoded_audio()
+        prefix = await first_valid_mp3_prefix(encoded)
         mark_voice_stage(
-            "edge_stream_complete",
-            duration_seconds=perf_counter() - started,
+            "tts_provider_valid_mp3_prefix",
             provider="edge",
-            bytes=total_bytes,
+            bytes=len(prefix),
+            minimum_frames=2,
         )
+        yield TTSAudioChunk(provider="edge", data=prefix)
+        async for data in encoded:
+            yield TTSAudioChunk(provider="edge", data=data)

@@ -65,3 +65,56 @@ def test_first_audio_is_delivered_while_llm_is_still_streaming() -> None:
         assert len(received_audio) == 2
 
     asyncio.run(run())
+
+
+def test_first_phrase_only_mode_keeps_full_text_but_synthesizes_once() -> None:
+    class MultiPhraseAI:
+        async def stream_reply(self, _messages: list[dict[str, str]]) -> AsyncIterator[str]:
+            yield "Hello there. "
+            yield "The second sentence remains visible as text only."
+
+    class CountingTTS:
+        def __init__(self) -> None:
+            self.requests: list[str] = []
+
+        async def synthesize(self, _text: str) -> str:
+            raise AssertionError("Streaming mode should not use complete-file TTS")
+
+        async def stream_audio(self, text: str) -> AsyncIterator[TTSAudioChunk]:
+            self.requests.append(text)
+            yield TTSAudioChunk(provider="test", data=b"mp3-frame")
+
+    async def run() -> None:
+        tts = CountingTTS()
+        replies: list[str] = []
+        spoken: list[tuple[int, bytes]] = []
+
+        async def token_sink(token: str, _session_id: str) -> None:
+            replies.append(token)
+
+        async def audio_sink(
+            chunks: AsyncIterator[TTSAudioChunk], chunk_index: int
+        ) -> None:
+            async for piece in chunks:
+                spoken.append((chunk_index, piece.data))
+
+        result = await stream_turn(
+            text="test prompt",
+            session_id=None,
+            memory=ShortTermMemory(),
+            context=ContextService(),
+            ai=MultiPhraseAI(),  # type: ignore[arg-type]
+            tts=tts,  # type: ignore[arg-type]
+            token_sink=token_sink,
+            audio_sink=None,
+            audio_stream_sink=audio_sink,
+            first_chunk_max_words=6,
+            max_tts_phrases=1,
+        )
+
+        assert result.reply == "Hello there. The second sentence remains visible as text only."
+        assert "".join(replies) == result.reply
+        assert tts.requests == ["Hello there."]
+        assert spoken == [(1, b"mp3-frame")]
+
+    asyncio.run(run())

@@ -8,6 +8,7 @@ import pytest
 from app.device.audio_bridge import stream_mp3_chunks_as_pcm
 from app.device.protocol import AUDIO_HEADER, AUDIO_HEADER_BYTES, AUDIO_TYPE_SPEAKER
 from app.services.tts_service import TTSAudioChunk
+from app.services.mp3_stream import has_complete_mp3_frames
 
 
 class FakeWebSocket:
@@ -39,6 +40,7 @@ def test_device_audio_is_decoded_and_forwarded_before_mp3_finishes(tmp_path: Pat
             capture_output=True,
         )
         mp3 = source.read_bytes()
+        assert has_complete_mp3_frames(mp3)
         input_complete = [False]
         websocket = FakeWebSocket(input_complete)
 

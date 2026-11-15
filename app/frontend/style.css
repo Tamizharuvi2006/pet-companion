@@ -93,6 +93,20 @@ h1 span { color: #b5b5b5; }
 .side-item span { width: .38rem; height: .38rem; border-radius: 50%; background: #60d394; }
 .feature { display: grid; gap: .1rem; padding: .72rem 0; border-bottom: 1px solid #353535; }
 .feature b { color: #e5e5e5; font-size: .78rem; font-weight: 650; }.feature span { color: #858585; }
+.topbar-actions { display: flex; align-items: center; gap: 1rem; }
+.logout { border: 0; background: transparent; color: #aaa; font: inherit; font-size: .75rem; cursor: pointer; }
+.auth-gate { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 1rem; background: rgba(8, 8, 10, .88); backdrop-filter: blur(10px); }
+.auth-gate[hidden] { display: none; }
+.auth-card { width: min(390px, 100%); padding: 2rem; display: grid; gap: .8rem; border: 1px solid #3c3c42; border-radius: 20px; background: #202023; box-shadow: 0 24px 80px rgba(0, 0, 0, .38); }
+.auth-card .avatar { margin-bottom: .25rem; }
+.auth-card .side-kicker { margin: 0; }
+.auth-card h2 { margin: 0; color: #f2f2f2; font-size: 1.5rem; }
+.auth-card .side-copy { margin: 0 0 .4rem; color: #aaa; }
+.auth-card label { color: #ccc; font-size: .8rem; }
+.auth-card input { min-width: 0; padding: .8rem .9rem; border: 1px solid #45454b; border-radius: 11px; outline: none; background: #171719; color: #fff; font: inherit; }
+.auth-card input:focus { border-color: #aa93ff; box-shadow: 0 0 0 3px rgba(170, 147, 255, .14); }
+.auth-card button { min-height: 42px; margin-top: .25rem; border: 0; border-radius: 11px; background: #f0f0f0; color: #171717; font: inherit; font-weight: 650; cursor: pointer; }
+.auth-error { margin: 0; color: #ffaaa9; font-size: .8rem; }
 
 .pet-art { position: relative; width: 100%; margin: 1rem 0 0; isolation: isolate; }
 .pet-art img { position: relative; z-index: 1; display: block; width: 100%; height: auto; border-radius: 14px; }
@@ -152,6 +166,8 @@ h1 span { color: #b5b5b5; }
 .message.assistant::before { color: #b8a8ff; }
 .message.user { align-self: flex-end; background: #343434; color: #f0f0f0; }
 .message.user::before { text-align: right; }
+.message.notice { align-self: center; max-width: 100%; padding: .48rem .7rem; border: 1px solid #574b75; border-radius: 9px; background: #292531; color: #d8cdf7; font-size: .72rem; text-align: center; }
+.message.notice::before { margin: 0 0 .18rem; color: #baa9ef; font-size: .56rem; }
 
 .text-form {
   gap: .55rem;

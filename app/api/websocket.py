@@ -1,5 +1,6 @@
 import base64
 import asyncio
+import binascii
 import json
 import logging
 import uuid
@@ -11,6 +12,9 @@ import aiofiles
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.schemas import ChatResponse, WebSocketEvent
+from app.services.event_loop_monitor import sample_event_loop_profile
+from app.services.diagnostic_session import DiagnosticSessionConsumedError
+from app.services.provider_budget import log_budget_summary, provider_budget_scope
 from app.services.streaming_turn_service import stream_turn
 from app.services.tts_service import TTSAudioChunk
 from app.services.voice_trace import (
@@ -18,6 +22,8 @@ from app.services.voice_trace import (
     bind_voice_trace,
     reset_voice_trace,
 )
+from app.services.browser_security import origin_is_allowed, websocket_principal
+from app.services.request_limits import CapacityGate
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
@@ -38,32 +44,116 @@ async def _finish_interim_before_final(
 
 @router.websocket("/ws/chat")
 async def chat_socket(websocket: WebSocket) -> None:
+    settings = websocket.app.state.settings
+    if not origin_is_allowed(
+        websocket.headers.get("origin"), websocket.headers.get("host"), settings
+    ):
+        await websocket.close(code=4403, reason="Origin is not allowed")
+        return
+    principal = websocket_principal(websocket)
+    if principal is None:
+        await websocket.close(code=4401, reason="Bella login required")
+        return
+    websocket_gate: CapacityGate = websocket.app.state.browser_websocket_gate
+    if not await websocket_gate.acquire():
+        await websocket.close(code=1013, reason="Bella is at connection capacity")
+        return
     await websocket.accept()
     await websocket.app.state.metrics.websocket_opened()
     chunks: list[bytes] = []
-    captured_audio_ms = 0
+    recording_bytes = 0
+    recording_started_at: float | None = None
+    recording_slot_owned = False
+    discard_recording = False
     partial_task: asyncio.Task[None] | None = None
     last_partial_audio_ms = 0
     active_capture_id: str | None = None
     session_id: str | None = None
     streaming_mp3 = False
+    diagnostic_recording_claimed = False
+
+    async def reject_recording(message: str, code: str = "invalid_audio") -> None:
+        nonlocal recording_bytes, recording_started_at, recording_slot_owned, discard_recording
+        await emit(websocket, "error", code=code, message=message)
+        chunks.clear()
+        recording_bytes = 0
+        recording_started_at = None
+        active_capture_reset()
+        if recording_slot_owned:
+            await websocket.app.state.recording_gate.release()
+            recording_slot_owned = False
+        discard_recording = True
+
+    def active_capture_reset() -> None:
+        nonlocal active_capture_id, last_partial_audio_ms, diagnostic_recording_claimed
+        active_capture_id = None
+        last_partial_audio_ms = 0
+        diagnostic_recording_claimed = False
+
     try:
         while True:
             raw = await websocket.receive_text()
+            if len(raw.encode("utf-8")) > ((settings.max_ws_audio_frame_bytes + 2) // 3) * 4 + 4096:
+                await reject_recording("WebSocket message exceeds the frame size limit", "frame_too_large")
+                continue
             event = WebSocketEvent.model_validate_json(raw)
             session_id = event.session_id or session_id
             if event.type == "client_capabilities":
                 streaming_mp3 = event.streaming_mp3 is True
                 continue
-            if event.type == "audio_chunk" and event.data:
+            if event.type == "audio_chunk":
+                if discard_recording:
+                    continue
+                if not event.data:
+                    await reject_recording("Audio frame is empty")
+                    continue
+                if recording_started_at is None:
+                    allowed = await websocket.app.state.rate_limiter.allow(
+                        f"voice:{principal}", settings.voice_requests_per_minute
+                    )
+                    if not allowed:
+                        await reject_recording("Voice request limit reached", "rate_limited")
+                        continue
+                    if not await websocket.app.state.recording_gate.acquire():
+                        await reject_recording("Bella is at recording capacity", "capacity")
+                        continue
+                    recording_slot_owned = True
+                    recording_started_at = perf_counter()
                 active_capture_id = event.capture_id or active_capture_id
-                chunks.append(base64.b64decode(event.data))
-                captured_audio_ms += event.duration_ms or 250
+                encoded_limit = ((settings.max_ws_audio_frame_bytes + 2) // 3) * 4
+                if len(event.data) > encoded_limit:
+                    await reject_recording("Audio frame is too large", "frame_too_large")
+                    continue
+                try:
+                    decoded = base64.b64decode(event.data, validate=True)
+                except (binascii.Error, ValueError):
+                    await reject_recording("Audio frame has invalid base64")
+                    continue
+                elapsed_ms = int((perf_counter() - recording_started_at) * 1000)
+                if len(decoded) > settings.max_ws_audio_frame_bytes:
+                    await reject_recording("Audio frame is too large", "frame_too_large")
+                    continue
+                if recording_bytes + len(decoded) > settings.max_ws_recording_bytes:
+                    await reject_recording("Maximum recording size exceeded", "recording_too_large")
+                    continue
+                if elapsed_ms > settings.max_ws_recording_seconds * 1000:
+                    await reject_recording("Maximum recording duration exceeded", "recording_too_long")
+                    continue
+                if settings.voice_test_enabled and not diagnostic_recording_claimed:
+                    try:
+                        await websocket.app.state.diagnostic_session.claim("websocket:audio")
+                    except DiagnosticSessionConsumedError as error:
+                        await reject_recording(str(error), "diagnostic_session_consumed")
+                        continue
+                    diagnostic_recording_claimed = True
+                chunks.append(decoded)
+                recording_bytes += len(decoded)
                 if (
-                    captured_audio_ms - last_partial_audio_ms >= PARTIAL_TRANSCRIPT_INTERVAL_MS
+                    settings.whisper_interim_enabled
+                    and elapsed_ms - last_partial_audio_ms >= PARTIAL_TRANSCRIPT_INTERVAL_MS
                     and (partial_task is None or partial_task.done())
                 ):
-                    last_partial_audio_ms = captured_audio_ms
+                    last_partial_audio_ms = elapsed_ms
                     partial_task = asyncio.create_task(
                         _emit_partial_transcript(
                             websocket,
@@ -73,27 +163,94 @@ async def chat_socket(websocket: WebSocket) -> None:
                     )
                 continue
             if event.type == "text" and event.data:
-                session_id = (await _handle_text(websocket, event.data, session_id)).session_id
+                if len(event.data) > 20_000:
+                    await emit(websocket, "error", code="text_too_large", message="Message is too long")
+                    continue
+                allowed = await websocket.app.state.rate_limiter.allow(
+                    f"chat:{principal}", settings.chat_requests_per_minute
+                )
+                if not allowed:
+                    await emit(websocket, "error", code="rate_limited", message="Chat request limit reached")
+                    continue
+                if not await websocket.app.state.voice_turn_gate.acquire():
+                    await emit(websocket, "error", code="capacity", message="Bella is busy; try again shortly")
+                    continue
+                try:
+                    if settings.voice_test_enabled:
+                        try:
+                            await websocket.app.state.diagnostic_session.claim(
+                                "websocket:text"
+                            )
+                        except DiagnosticSessionConsumedError as error:
+                            await emit(
+                                websocket,
+                                "error",
+                                code="diagnostic_session_consumed",
+                                message=str(error),
+                            )
+                            continue
+                    async with provider_budget_scope(settings.voice_test_mode) as budget:
+                        try:
+                            session_id = (await _handle_text(websocket, event.data, session_id)).session_id
+                        finally:
+                            await log_budget_summary(budget)
+                finally:
+                    await websocket.app.state.voice_turn_gate.release()
                 continue
             if event.type == "stop_recording":
+                if discard_recording:
+                    discard_recording = False
+                    chunks.clear()
+                    recording_bytes = 0
+                    recording_started_at = None
+                    active_capture_reset()
+                    continue
                 capture_id = event.capture_id or active_capture_id
+                if recording_started_at is not None and (
+                    perf_counter() - recording_started_at > settings.max_ws_recording_seconds
+                ):
+                    await reject_recording("Maximum recording duration exceeded", "recording_too_long")
+                    discard_recording = False
+                    continue
                 # The local interim recognizer is only a UI hint. Do not put
                 # its remaining CPU work in front of authoritative final STT.
                 # New clients correlate late hints by capture_id; legacy
                 # clients keep the original ordered behavior.
-                await _finish_interim_before_final(partial_task, capture_id)
-                session_id = await _handle_audio(
-                    websocket,
-                    chunks,
-                    session_id,
-                    streaming_mp3=streaming_mp3,
-                    capture_id=capture_id,
+                voice_trace = VoiceTrace()
+                voice_trace.mark(
+                    "recording_stop_received",
+                    pending_jobs=int(partial_task is not None and not partial_task.done()),
                 )
-                chunks.clear()
-                captured_audio_ms = 0
-                partial_task = None
-                last_partial_audio_ms = 0
-                active_capture_id = None
+                await _finish_interim_before_final(partial_task, capture_id)
+                try:
+                    if not await websocket.app.state.voice_turn_gate.acquire():
+                        await emit(websocket, "error", code="capacity", message="Bella is busy; try again shortly")
+                        continue
+                    try:
+                        async with provider_budget_scope(settings.voice_test_mode) as budget:
+                            try:
+                                session_id = await _handle_audio(
+                                    websocket,
+                                    chunks,
+                                    session_id,
+                                    streaming_mp3=streaming_mp3,
+                                    capture_id=capture_id,
+                                    voice_trace=voice_trace,
+                                )
+                            finally:
+                                await log_budget_summary(
+                                    budget, trace_id=voice_trace.trace_id
+                                )
+                    finally:
+                        await websocket.app.state.voice_turn_gate.release()
+                finally:
+                    chunks.clear()
+                    recording_bytes = 0
+                    recording_started_at = None
+                    active_capture_reset()
+                    if recording_slot_owned:
+                        await websocket.app.state.recording_gate.release()
+                        recording_slot_owned = False
                 continue
             await emit(websocket, "error", message="Unknown or incomplete WebSocket event")
     except WebSocketDisconnect:
@@ -104,6 +261,12 @@ async def chat_socket(websocket: WebSocket) -> None:
         logger.exception("WebSocket processing failed")
         await emit(websocket, "error", message="Could not process this request")
     finally:
+        if partial_task is not None and not partial_task.done():
+            partial_task.cancel()
+            await asyncio.gather(partial_task, return_exceptions=True)
+        if recording_slot_owned:
+            await websocket.app.state.recording_gate.release()
+        await websocket_gate.release()
         await websocket.app.state.metrics.websocket_closed()
 
 
@@ -118,6 +281,8 @@ async def _emit_partial_transcript(
         async with aiofiles.open(path, "wb") as audio_file:
             await audio_file.write(audio)
         transcript = await websocket.app.state.whisper.transcribe(path, interim=True)
+        if not transcript:
+            return
         await emit(
             websocket,
             "partial_transcript",
@@ -143,6 +308,8 @@ async def _handle_text(
     streaming_audio: bool = False,
     turn_started: float | None = None,
     voice_trace: VoiceTrace | None = None,
+    max_tts_phrases: int | None = None,
+    full_voice_mode: bool = False,
 ) -> ChatResponse:
     """Stream response text and optionally synthesize completed sentences in parallel."""
     trace = voice_trace or VoiceTrace(started_at=turn_started or perf_counter())
@@ -221,6 +388,14 @@ async def _handle_text(
             chunk_index=chunk_index,
         )
 
+    async def send_speech_coverage(complete: bool, message: str) -> None:
+        await emit_turn(
+            "speech_coverage",
+            complete=complete,
+            text=message,
+            trace_id=trace.trace_id,
+        )
+
     try:
         result = await stream_turn(
             text=text,
@@ -237,6 +412,9 @@ async def _handle_text(
             voice_trace=trace,
             turn_started=turn_started,
             first_chunk_max_words=websocket.app.state.settings.tts_first_chunk_words,
+            max_tts_phrases=max_tts_phrases,
+            full_voice_mode=full_voice_mode,
+            speech_coverage_sink=send_speech_coverage if full_voice_mode else None,
         )
         trace.mark("browser_reply_complete_sent")
         await emit_turn(
@@ -259,21 +437,41 @@ async def _handle_audio(
     *,
     streaming_mp3: bool = False,
     capture_id: str | None = None,
+    voice_trace: VoiceTrace | None = None,
 ) -> str:
     if not chunks:
         await emit(websocket, "error", message="No audio was received")
         return session_id or ""
     settings = websocket.app.state.settings
-    voice_trace = VoiceTrace()
+    voice_trace = voice_trace or VoiceTrace()
     trace_token = bind_voice_trace(voice_trace)
-    voice_trace.mark("voice_turn_received")
+    voice_trace.mark("voice_turn_started")
     turn_started = voice_trace.started_at
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     path = settings.upload_dir / f"ws-{uuid.uuid4()}.webm"
-    async with aiofiles.open(path, "wb") as audio_file:
-        await audio_file.write(b"".join(chunks))
+    loop_stop = asyncio.Event() if settings.voice_test_enabled else None
+    loop_profile_started_at = perf_counter() if loop_stop is not None else None
+    loop_probe = (
+        asyncio.create_task(sample_event_loop_profile(loop_stop))
+        if loop_stop is not None
+        else None
+    )
     try:
+        async with aiofiles.open(path, "wb") as audio_file:
+            await audio_file.write(b"".join(chunks))
         await emit(websocket, "status", text="Processing...")
+        if settings.voice_test_enabled:
+            bounded_full_voice = settings.bounded_full_voice_test
+            await emit(
+                websocket,
+                "diagnostic_audio_mode",
+                text=(
+                    "BOUNDED FULL-REPLY AUDIO — up to three Kokoro segments; playback is still being verified."
+                    if bounded_full_voice
+                    else "FIRST-PHRASE-ONLY AUDIO — the rest of Bella's reply is text only."
+                ),
+                trace_id=voice_trace.trace_id,
+            )
         whisper_started = perf_counter()
         voice_trace.mark("stt_started")
         transcript = await websocket.app.state.whisper.transcribe(path)
@@ -296,10 +494,33 @@ async def _handle_audio(
             streaming_audio=streaming_mp3,
             turn_started=turn_started,
             voice_trace=voice_trace,
+            max_tts_phrases=(3 if settings.bounded_full_voice_test else 1)
+            if settings.voice_test_enabled
+            else None,
+            full_voice_mode=settings.bounded_full_voice_test,
         )
         await emit(websocket, "status", text="Ready")
         voice_trace.mark("server_turn_complete")
         return result.session_id
     finally:
+        if loop_stop is not None and loop_probe is not None:
+            loop_stop.set()
+            profile = await loop_probe
+            voice_trace.mark(
+                "event_loop_responsiveness",
+                max_lag_ms=profile.max_lag_ms,
+                max_lag_offset_ms=profile.max_lag_offset_ms,
+                max_lag_turn_offset_ms=(
+                    (loop_profile_started_at - voice_trace.started_at) * 1000
+                    + profile.max_lag_offset_ms
+                    if loop_profile_started_at is not None
+                    else profile.max_lag_offset_ms
+                ),
+                avg_lag_ms=profile.average_lag_ms,
+                samples=profile.samples,
+                process_cpu_percent=profile.process_cpu_percent,
+                max_active_threads=profile.max_active_threads,
+                max_active_tasks=profile.max_active_tasks,
+            )
         reset_voice_trace(trace_token)
         path.unlink(missing_ok=True)

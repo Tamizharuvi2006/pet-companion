@@ -2,6 +2,8 @@
 #include "bella_audio_i2s.h"
 #include "bella_device_ws.h"
 #include "bella_runtime.h"
+#include "bella_display.h"
+#include "esp_random.h"
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
@@ -34,6 +36,7 @@ static bool g_first_device_frame_logged = false;
 static char g_text_fragments[4096]{};
 static size_t g_text_expected = 0;
 static uint8_t g_fragment_opcode = 0;
+static char g_last_face_command[33]{};
 
 static uint32_t read_u32_le(const uint8_t *bytes) {
     return static_cast<uint32_t>(bytes[0]) |
@@ -67,7 +70,20 @@ static void on_text_message(const char *text, size_t length) {
     const char *type = cJSON_IsString(type_item) ? type_item->valuestring : "";
     const uint32_t turn_id = cJSON_IsNumber(turn_item) ? static_cast<uint32_t>(turn_item->valuedouble) : 0;
 
-    if (std::strcmp(type, "device_ready") == 0) {
+    if (std::strcmp(type, "face_command") == 0) {
+        const auto *id=cJSON_GetObjectItemCaseSensitive(root,"command_id");
+        const auto *expression=cJSON_GetObjectItemCaseSensitive(root,"expression");
+        const auto *duration=cJSON_GetObjectItemCaseSensitive(root,"duration_ms");
+        const auto *version=cJSON_GetObjectItemCaseSensitive(root,"face_version");
+        if(cJSON_IsString(id)&&std::strlen(id->valuestring)==32&&cJSON_IsString(expression)&&cJSON_IsNumber(duration)&&cJSON_IsNumber(version)&&version->valueint==1){
+            const bool duplicate=std::strcmp(g_last_face_command,id->valuestring)==0;
+            if(duplicate||bella_display_expression(expression->valuestring,duration->valueint)){
+                std::snprintf(g_last_face_command,sizeof(g_last_face_command),"%s",id->valuestring);
+                char ack[160];std::snprintf(ack,sizeof(ack),"{\"type\":\"face_ack\",\"version\":1,\"face_version\":1,\"command_id\":\"%s\"}",g_last_face_command);
+                bella_ws_send_control(ack);
+            }
+        }
+    } else if (std::strcmp(type, "device_ready") == 0) {
         g_ready.store(true);
         bella_set_state(BellaState::Idle);
         ESP_LOGI(TAG, "Authenticated device session ready");
@@ -163,7 +179,7 @@ static void websocket_event_handler(void *, esp_event_base_t, int32_t event_id, 
         std::snprintf(
             hello,
             sizeof(hello),
-            "{\"type\":\"hello\",\"version\":1,\"device_id\":\"%s\",\"token\":\"%s\",\"firmware_version\":\"%s\",\"capabilities\":{\"audio_in\":true,\"audio_out\":true,\"touch\":true,\"distance\":true,\"tft\":false,\"servos\":%s},\"sensors\":{}}",
+            "{\"type\":\"hello\",\"version\":1,\"device_id\":\"%s\",\"token\":\"%s\",\"firmware_version\":\"%s\",\"capabilities\":{\"face_protocol_v1\":true,\"audio_in\":true,\"audio_out\":true,\"touch\":true,\"distance\":true,\"tft\":false,\"servos\":%s},\"sensors\":{}}",
             BELLA_DEVICE_ID, BELLA_DEVICE_TOKEN, BELLA_FIRMWARE_VERSION,
             BELLA_SERVO_ENABLED ? "true" : "false");
         xSemaphoreTake(g_send_mutex, portMAX_DELAY);
@@ -209,6 +225,11 @@ static void websocket_event_handler(void *, esp_event_base_t, int32_t event_id, 
 }
 
 static bool start_client() {
+#if !BELLA_ALLOW_INSECURE_LOCAL_WS
+    if(std::strncmp(BELLA_BACKEND_WS_URL,"wss://",6)!=0){
+        ESP_LOGE(TAG,"Secure wss:// backend URL required");return false;
+    }
+#endif
     if (std::strlen(BELLA_DEVICE_TOKEN) < 16) {
         ESP_LOGE(TAG, "Device token missing or too short; configure ignored secrets.h");
         return false;
@@ -258,7 +279,7 @@ static void reconnect_task(void *) {
             (void)esp_websocket_client_stop(old_client);
             (void)esp_websocket_client_destroy(old_client);
         }
-        vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+        vTaskDelay(pdMS_TO_TICKS(backoff_ms + esp_random()%500));
         ESP_LOGI(TAG, "Starting backend reconnect attempt after %lu ms", static_cast<unsigned long>(backoff_ms));
         if (!start_client()) g_reconnect_requested.store(true);
         backoff_ms = backoff_ms >= 15000 ? 30000 : backoff_ms * 2;

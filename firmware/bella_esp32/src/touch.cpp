@@ -1,8 +1,6 @@
 #include "bella_config.h"
-#include "bella_device_ws.h"
-#include "bella_runtime.h"
-#include "bella_servo.h"
 #include "bella_touch.h"
+#include "bella_display.h"
 
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -23,7 +21,6 @@ struct DebounceState {
     TickType_t changed_at = 0;
 };
 static std::array<DebounceState, 4> g_inputs{};
-static uint32_t g_active_turn = 0;
 
 static bool read_pressed(gpio_num_t pin) {
     const bool high = gpio_get_level(pin) != 0;
@@ -31,34 +28,8 @@ static bool read_pressed(gpio_num_t pin) {
 }
 
 static void on_press(size_t index) {
-    switch (index) {
-        case 0:
-            if (g_active_turn != 0) {
-                bella_ws_end_recording(g_active_turn);
-                g_active_turn = 0;
-            } else {
-                g_active_turn = bella_ws_begin_recording();
-            }
-            break;
-        case 1:
-            if (g_active_turn != 0) {
-                bella_ws_cancel(g_active_turn);
-                g_active_turn = 0;
-            } else if (bella_get_state() == BellaState::Speaking || bella_get_state() == BellaState::Processing) {
-                bella_ws_cancel(0);
-            }
-            break;
-        case 2:
-            bella_set_pet_reaction();
-            break;
-        case 3: {
-            const bool muted = bella_toggle_muted();
-            ESP_LOGI(TAG, "speaker mute=%s", muted ? "true" : "false");
-            break;
-        }
-        default:
-            break;
-    }
+    // Phase 2A: visual-only inputs; never record, cancel, mute, or move servos.
+    bella_display_touch(index);
 }
 
 static void touch_task(void *) {

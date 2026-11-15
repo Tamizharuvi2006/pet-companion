@@ -19,6 +19,7 @@ from app.device.protocol import (
     parse_control_message,
 )
 from app.device.security import verify_device_token
+from app.device.face import FaceReport
 from app.services.streaming_turn_service import stream_turn
 from app.services.tts_service import TTSAudioChunk
 from app.services.voice_trace import (
@@ -139,6 +140,27 @@ async def device_socket(websocket: WebSocket) -> None:
                     await _send_json(websocket, send_lock,
                         {"type": "pong", "version": PROTOCOL_VERSION, "turn_id": active_turn_id}
                     )
+                    command = await registry.take_command(device_id)
+                    if command is not None:
+                        await _send_json(websocket, send_lock, command)
+                elif message.type in {'face_report', 'face_ack'}:
+                    if not await websocket.app.state.rate_limiter.allow(f'face-report:{device_id}', 120):
+                        await _send_error(websocket, 'rate_limit', 'Face event rate exceeded')
+                        continue
+                    payload = message.model_extra or {}
+                    if payload.get('face_version') != 1:
+                        raise ValueError('Unsupported face version')
+                    if message.type == 'face_ack':
+                        command_id = payload.get('command_id')
+                        if not isinstance(command_id, str) or len(command_id) != 32:
+                            raise ValueError('Invalid command acknowledgement')
+                        await registry.acknowledge(device_id, command_id)
+                    else:
+                        report = FaceReport.model_validate({
+                            'expression': payload.get('expression'),
+                            'sequence': message.sequence,
+                            'touch_pad': payload.get('touch_pad')})
+                        await registry.face_report(device_id, report.expression, report.sequence, report.touch_pad)
                 elif message.type == "sensor_event":
                     if message.state is not None and message.state not in ALLOWED_DEVICE_STATES:
                         await _send_error(websocket, "invalid_state", "Unsupported device state", active_turn_id, send_lock)
@@ -147,6 +169,9 @@ async def device_socket(websocket: WebSocket) -> None:
                         device_id, state=message.state, sensors=message.sensors
                     )
                 elif message.type == "recording_start":
+                    if settings.voice_test_enabled:
+                        await _send_error(websocket, 'voice_test_browser_only', 'Device voice is disabled during bounded browser acceptance')
+                        continue
                     if message.turn_id is None or recording:
                         await _send_error(websocket, "invalid_state", "Cannot start recording now", active_turn_id)
                         continue

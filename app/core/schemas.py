@@ -30,6 +30,15 @@ class TTSRequest(BaseModel):
     pitch: str | None = Field(default=None, max_length=16)
 
 
+class LoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class AuthSessionResponse(BaseModel):
+    required: bool
+    authenticated: bool
+
+
 class TTSResponse(BaseModel):
     audio_url: str
 
@@ -47,10 +56,14 @@ class HealthResponse(BaseModel):
     environment: str
 
 
+class ClientConfigResponse(BaseModel):
+    pet_voice_synthesis_enabled: bool
+
+
 class WebSocketEvent(BaseModel):
     type: str
-    data: str | None = None
-    session_id: str | None = None
+    data: str | None = Field(default=None, max_length=1_400_000)
+    session_id: str | None = Field(default=None, max_length=128)
     capture_id: str | None = Field(default=None, max_length=64)
     duration_ms: int | None = Field(default=None, ge=1, le=10_000)
     streaming_mp3: bool | None = None

@@ -4,9 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Bella AI</title>
-    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/style.css?v=phase1e" />
   </head>
   <body>
+    <section id="auth-gate" class="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
+      <form id="auth-form" class="auth-card">
+        <div class="avatar" aria-hidden="true">B</div>
+        <p class="side-kicker">PRIVATE COMPANION</p>
+        <h2 id="auth-title">Welcome back.</h2>
+        <p class="side-copy">Enter your Bella access password to continue.</p>
+        <label for="auth-password">Access password</label>
+        <input id="auth-password" type="password" autocomplete="current-password" required maxlength="1024" />
+        <p id="auth-error" class="auth-error" role="alert" hidden></p>
+        <button id="auth-submit" type="submit">Continue</button>
+      </form>
+    </section>
     <div class="ambient ambient-one"></div>
     <div class="ambient ambient-two"></div>
     <div class="workspace">
@@ -34,7 +46,10 @@
             <h1>Bella<span>.</span></h1>
           </div>
         </div>
-        <div id="status" class="status" aria-live="polite"><i></i> Connecting…</div>
+        <div class="topbar-actions">
+          <button id="logout" class="logout" type="button" hidden>Sign out</button>
+          <div id="status" class="status" aria-live="polite"><i></i> Connecting…</div>
+        </div>
       </header>
       <div class="mobile-pets" aria-label="Bella's little companions">
         <button class="mobile-pet mobile-pet-cat" type="button" data-pet-sound aria-label="Pet the Bella cat">
@@ -66,6 +81,7 @@
         <button id="stop" class="secondary stop" disabled>Stop</button>
       </section>
       <button id="play-audio" class="audio-resume" hidden>▶ Play Bella’s reply</button>
+      <button id="retry-audio" class="audio-resume" hidden>↻ Retry Bella’s voice</button>
       <audio id="player"></audio>
     </main>
       <div class="side-stack">
@@ -83,6 +99,6 @@
         </figure>
       </div>
     </div>
-    <script src="/app.js"></script>
+    <script src="/app.js?v=phase1e"></script>
   </body>
 </html>

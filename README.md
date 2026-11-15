@@ -22,7 +22,7 @@ Browser-first voice-assistant backend built with Python 3.12 and FastAPI. The br
 
 Open [http://localhost:8000](http://localhost:8000). Bella sends the final recording to `openai/whisper-large-v3-turbo`; if that request is disabled, unavailable, or fails, it uses preloaded local Faster-Whisper `base`. The local `tiny` model remains the fast interim transcript engine. In the three-repeat, five-clip synthetic baseline, Whisper Turbo averaged 0.561 seconds (p95 0.634 seconds) versus Voxtral's 0.812 seconds (p95 1.296 seconds), with matching English transcripts and slightly lower tested cost. `OPENROUTER_TANGLISH_STT_MODEL=mistralai/voxtral-mini-transcribe` records the separate Tanglish experiment; it is not the normal route until real Tanglish/mic tests prove it is better.
 
-Normal Bella replies and cute pet-click phrases use Kokoro voice `af_bella`, an English voice that tested faster than `af_heart` in the local chunk benchmark. To prevent a slow Kokoro response from stalling a voice turn, Bella races Kokoro against `en-US-AnaNeural` Edge TTS and uses the first completed audio; the slower result is cancelled. Set `TTS_RACE_ENABLED=false` to always wait for Kokoro, or `TTS_PROVIDER=edge` for an Edge-only deployment. `WHISPER_DEVICE=cpu` is the portable fallback default; only choose `cuda` when the matching CUDA 12 runtime is installed. Leave `WHISPER_LANGUAGE` blank for Tanglish auto-detection. Use a secure origin (localhost is accepted by browsers) and grant microphone permission.
+Normal Bella replies and cute pet-click phrases use Kokoro voice `af_bella`, an English voice that tested faster than `af_heart` in the local chunk benchmark. To prevent a slow Kokoro response from stalling a voice turn, Bella races Kokoro against `en-US-AnaNeural` Edge TTS and selects the first stream with two structurally complete MP3 frames; the slower stream is cancelled. This is a framing check, not proof of decoder success. If the selected stream later fails, the browser tears down that turn and offers an explicit retry instead of silently replaying partial speech. Set `TTS_RACE_ENABLED=false` to use Kokoro only, or `TTS_PROVIDER=edge` for Edge-only mode. `WHISPER_DEVICE=cpu` is the portable fallback default; only choose `cuda` when the matching CUDA 12 runtime is installed. Leave `WHISPER_LANGUAGE` blank for Tanglish auto-detection. Use a secure origin (localhost is accepted by browsers) and grant microphone permission.
 
 ## API
 
@@ -40,9 +40,17 @@ Normal Bella replies and cute pet-click phrases use Kokoro voice `af_bella`, an 
 | `GET /api/device/{id}/config` | Bearer-authenticated device audio/protocol config |
 | `POST /api/device/{id}/camera/capture` | Authenticated proxy to configured camera JPEG capture |
 
-WebSocket client events are `audio_chunk` (base64 WebM data), `stop_recording`, `text`, and `client_capabilities`. Server events include `status`, `transcript`, `reply_delta`, `reply`, `audio`, `tts_stream_start`, `tts_stream_end`, `tts_stream_abort`, and `error`; progressive audio is carried in binary WebSocket messages between its start/end events. The server returns a session id with each reply; send it on later requests to continue the same history. For voice turns, Bella sends an early whole-word phrase to TTS while GPT continues generating. `TTS_FIRST_CHUNK_WORDS` controls the 4-8-word target (default 6); a short sentence boundary is preferred. Later output is batched into 15-25-word chunks, preferring `.`, `!`, or `?`. Browser clients that advertise MP3 MediaSource support receive provider audio bytes over the WebSocket as they arrive, so playback can begin before a complete TTS file or GPT reply exists. Other clients use the existing audio-file URL queue. The ESP32 path incrementally decodes the MP3 stream through one FFmpeg process per phrase and forwards bounded PCM frames to I²S.
+WebSocket client events are `audio_chunk` (base64 WebM data), `stop_recording`, `text`, and `client_capabilities`. Server events include `status`, `transcript`, `reply_delta`, `reply`, `audio`, `tts_stream_start`, `tts_stream_end`, `tts_stream_abort`, `speech_coverage`, and `error`; progressive audio is carried in binary WebSocket messages between its start/end events. The server returns a session id with each reply; send it on later requests to continue the same history. For voice turns, Bella sends an early whole-word phrase to TTS while GPT continues generating. `TTS_FIRST_CHUNK_WORDS` controls the 4-8-word target (default 6); a short sentence boundary is preferred. Later output is batched into 15-25-word chunks, preferring `.`, `!`, or `?`. Browser clients that advertise MP3 MediaSource support receive provider audio bytes over the WebSocket as they arrive, so playback can begin before a complete TTS file or GPT reply exists. Other clients use the existing audio-file URL queue. The ESP32 path incrementally decodes the MP3 stream through one FFmpeg process per phrase and forwards bounded PCM frames to I²S.
+
+Two mutually exclusive, process-wide one-shot voice test modes are available and disabled by default. `VOICE_DIAGNOSTIC_MODE=true` preserves the Phase 1E first-phrase-only test. `BOUNDED_FULL_VOICE_TEST=true` selects Phase 1F full-reply speech: one OpenRouter STT request, one GPT request, at most three Kokoro requests, and no Edge fallback/retries. Before a separately authorized test, turn off `VOICE_DIAGNOSTIC_MODE`, set `WHISPER_INTERIM_ENABLED=false` and `TTS_RACE_ENABLED=false`, then enable `BOUNDED_FULL_VOICE_TEST`. Startup validates the fixed GPT-4o Mini, Whisper Large V3 Turbo, Kokoro `af_bella`, and provider settings. Any paid HTTP or WebSocket operation consumes the same process latch; a restart is required for a fresh test. The local planner bounds each TTS input to 2,000 characters and reports incomplete audio rather than silently claiming full coverage. `speech_coverage` confirms only server-to-browser delivery, not that the browser decoded or audibly played it. Do not enable either mode for normal conversations.
 
 Voice routes log the exact OpenRouter STT model, `Whisper final`, `Kokoro TTS`, `Edge TTS`, `openrouter`, and `total` duration. If a provider falls back, the logs say exactly which provider failed and which fallback was used.
+
+## Browser access and public deployment
+
+Local `ENVIRONMENT=development` keeps the browser convenient without a login. For any public/staging deployment, set `ENVIRONMENT=production`, `BELLA_ACCESS_PASSWORD` (a strong shared browser password of at least 16 characters), `BELLA_SESSION_SECRET` (random 32+ character signing secret), and `BELLA_ALLOWED_ORIGINS` (comma-separated exact HTTPS origins, with no paths). Startup fails closed if these are missing or malformed. The browser gets an HttpOnly, Secure, SameSite=Strict cookie; provider credentials never go to JavaScript. Keep secrets only in local `.env` or the hosting provider's secret-variable store.
+
+HTTP paid routes, generated audio, metrics, and `/ws/chat` require that browser session in public mode. Rate limits, active-session caps, and provider concurrency are currently in-process; each Railway replica enforces its own limits. Before scaling to multiple replicas or exposing a high-traffic service, put a shared limiter (for example Redis) and edge/body-size limits in front of it. `/health` remains public for Railway health checks. ESP32 device-token authentication is independent and unchanged.
 
 Kokoro 82M is billed by input characters at $0.62 per million characters: about $0.000062 for 100 characters, $0.00062 for 1,000 characters, and $0.00248 for 4,000 characters. Its 4K context is a request-size limit, not a $0.62 charge. `OPENROUTER_TTS_TIMEOUT_SECONDS=8` protects conversational latency by falling back to Edge if Kokoro is slow or fails.
 
@@ -77,11 +85,23 @@ The Docker health check calls `/health`; use `/metrics` to inspect request durat
 ## Deploy to Railway
 
 1. Push this directory to a Git repository and create a Railway service from it. Railway detects the `Dockerfile` automatically.
-2. In Railway **Variables**, set `OPENROUTER_API_KEY`, `TTS_PROVIDER=kokoro`, `OPENROUTER_STT_ENABLED=true`, `OPENROUTER_STT_MODEL=openai/whisper-large-v3-turbo`, `OPENROUTER_TTS_VOICE=af_bella`, and `OPENROUTER_TTS_CUTE_VOICE=af_bella`. Railway supplies `PORT`; do not hard-code it.
+2. In Railway **Variables**, set `ENVIRONMENT=production`, `BELLA_ACCESS_PASSWORD`, `BELLA_SESSION_SECRET`, and `BELLA_ALLOWED_ORIGINS` to the exact generated HTTPS domain, in addition to `OPENROUTER_API_KEY`, `TTS_PROVIDER=kokoro`, `OPENROUTER_STT_ENABLED=true`, `OPENROUTER_STT_MODEL=openai/whisper-large-v3-turbo`, `OPENROUTER_TTS_VOICE=af_bella`, and `OPENROUTER_TTS_CUTE_VOICE=af_bella`. Railway supplies `PORT`; do not hard-code it.
 3. Deploy. The container starts with `uvicorn app.main:app --host 0.0.0.0 --port $PORT` and listens on Railway's assigned port.
-4. Configure Railway's health check path as `/health`, then verify `/health` and `/metrics` from the generated domain. The browser test page is served from `/`.
+4. Configure Railway's health check path as `/health`, then verify `/health` from the generated domain. `/metrics` requires a logged-in browser session in production. The browser test page is served from `/`.
 
 Generated audio is stored on the container filesystem. Treat it as temporary on Railway; use an object store before relying on audio retention across deployments.
+
+## Offline and browser tests
+
+Install test-only tools without adding them to the production image, then run the Python and real-browser suites:
+
+```powershell
+uv pip install --python .venv\Scripts\python.exe -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest tests\browser -q
+```
+
+The browser acceptance test uses locally generated FFmpeg MP3 tones and fake in-process AI/STT/TTS services, then launches the installed Microsoft Edge channel to verify MediaSource decode/playback, phrase ordering, cleanup, and that first playback precedes LLM completion. It makes no paid-provider calls. If Microsoft Edge or FFmpeg is unavailable, that test skips; the offline service/parser tests remain separate from live audible-provider acceptance.
 
 ## ESP32 later
 

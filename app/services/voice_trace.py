@@ -14,7 +14,34 @@ logger = logging.getLogger(__name__)
 _voice_trace: contextvars.ContextVar[VoiceTrace | None] = contextvars.ContextVar(
     "bella_voice_trace", default=None
 )
-_SAFE_FIELDS = frozenset({"provider", "chunk", "bytes", "frame", "words", "status"})
+_SAFE_FIELDS = frozenset(
+    {
+        "provider",
+        "chunk",
+        "bytes",
+        "frame",
+        "words",
+        "status",
+        "message_count",
+        "context_chars",
+        "estimated_input_tokens",
+        "retry_policy",
+        "events",
+        "provider_model",
+        "pending_jobs",
+        "max_lag_ms",
+        "max_lag_offset_ms",
+        "max_lag_turn_offset_ms",
+        "avg_lag_ms",
+        "samples",
+        "process_cpu_percent",
+        "max_active_threads",
+        "max_active_tasks",
+        "complete",
+        "segments_delivered",
+        "reason",
+    }
+)
 
 
 @dataclass(slots=True)
