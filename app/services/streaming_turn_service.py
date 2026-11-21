@@ -20,8 +20,11 @@ logger = logging.getLogger(__name__)
 
 FIRST_TTS_CHUNK_MIN_WORDS = 2
 FIRST_TTS_CHUNK_MAX_WORDS = 6
+FIRST_TTS_CLAUSE_MIN_WORDS = 3
+FIRST_TTS_CLAUSE_BREAK = re.compile(r";(?=\s)|(?<=\s)\u2014(?=\s)")
 MIN_TTS_CHUNK_WORDS = 15
 MAX_TTS_CHUNK_WORDS = 25
+PREFETCH_AUDIO_PIECE_BYTES = 16 * 1024
 
 TokenSink = Callable[[str, str], Awaitable[None]]
 AudioSink = Callable[[str, int], Awaitable[None]]
@@ -34,11 +37,17 @@ def take_tts_chunks(
     *,
     allow_short_first_chunk: bool = False,
     first_chunk_max_words: int = FIRST_TTS_CHUNK_MAX_WORDS,
+    natural_boundaries: bool = False,
 ) -> tuple[list[str], str]:
     """Release an early whole-word phrase, then batch later speech naturally."""
     if first_chunk_max_words < FIRST_TTS_CHUNK_MIN_WORDS:
         raise ValueError("first chunk target must be at least two words")
     chunks: list[str] = []
+    if natural_boundaries and allow_short_first_chunk:
+        # Start speech before the whole opening sentence arrives. Never send
+        # individual tokens: wait for complete words and cap the opening at six.
+        # Later phrases retain the larger continuity-oriented batching below.
+        first_chunk_max_words = min(6, max(4, first_chunk_max_words))
     while buffer.strip():
         punctuation = list(re.finditer(r"[.!?]+(?:[\"')\]]*)?(?=\s|$)", buffer))
         words = list(re.finditer(r"\S+", buffer))
@@ -48,12 +57,23 @@ def take_tts_chunks(
         ):
             complete_word_count -= 1
         if allow_short_first_chunk:
+            # Strong clause punctuation can release the opening before the
+            # word target. Commas and hyphens do not count as clause breaks.
+            first_breaks = sorted(
+                [(mark.end(), FIRST_TTS_CHUNK_MIN_WORDS) for mark in punctuation]
+                + ([(mark.end(), 4) for mark in re.finditer(r",(?=\s)", buffer)]
+                   if natural_boundaries else [])
+                + [
+                    (mark.end(), FIRST_TTS_CLAUSE_MIN_WORDS)
+                    for mark in FIRST_TTS_CLAUSE_BREAK.finditer(buffer)
+                ]
+            )
             first_boundary = next(
                 (
-                    mark
-                    for mark in punctuation
-                    if FIRST_TTS_CHUNK_MIN_WORDS
-                    <= _word_count(buffer[: mark.end()])
+                    end
+                    for end, min_words in first_breaks
+                    if min_words
+                    <= _word_count(buffer[:end].rstrip(" \u2014"))
                     <= first_chunk_max_words
                 ),
                 None,
@@ -61,7 +81,7 @@ def take_tts_chunks(
             if first_boundary is None and complete_word_count < first_chunk_max_words:
                 break
             split_at = (
-                first_boundary.end()
+                first_boundary
                 if first_boundary is not None
                 else words[first_chunk_max_words - 1].end()
             )
@@ -128,6 +148,7 @@ async def stream_turn(
     max_tts_phrases: int | None = None,
     full_voice_mode: bool = False,
     speech_coverage_sink: SpeechCoverageSink | None = None,
+    spoken_reply: bool = False,
 ) -> ChatResponse:
     """Stream LLM output while a bounded TTS worker synthesizes early phrases."""
     if full_voice_mode and max_tts_phrases != 3:
@@ -152,6 +173,7 @@ async def stream_turn(
             max_tts_phrases=max_tts_phrases,
             full_voice_mode=full_voice_mode,
             speech_coverage_sink=speech_coverage_sink,
+            spoken_reply=spoken_reply,
         )
     finally:
         reset_voice_trace(trace_token)
@@ -173,11 +195,15 @@ async def _stream_turn_bound(
     max_tts_phrases: int | None,
     full_voice_mode: bool,
     speech_coverage_sink: SpeechCoverageSink | None,
+    spoken_reply: bool,
 ) -> ChatResponse:
     context_started = perf_counter()
     active_session = await memory.session_id(session_id)
     await memory.add(active_session, Message(role="user", content=text))
-    messages = context.build_messages(await memory.get_history(active_session))
+    messages = context.build_messages(
+        await memory.get_history(active_session),
+        spoken_reply=spoken_reply or audio_sink is not None or audio_stream_sink is not None,
+    )
     context_chars = sum(len(message["content"]) for message in messages)
     trace.mark(
         "llm_context_prepared",
@@ -194,12 +220,50 @@ async def _stream_turn_bound(
     tts_worker: asyncio.Task[None] | None = None
     chunk_index = 0
     phrases_queued = 0
+    opening_words = 0
     first_tts_chunk_sent = False
     pending_tail_buffer = ""
     pending_tail_overflow = False
     tail_started = False
     speech_coverage_issue: str | None = None
     speech_segments_delivered = 0
+    prefetch_tasks: set[asyncio.Task[None]] = set()
+    prefetch_slots = asyncio.Semaphore(2)
+    prefetched: dict[int, asyncio.Queue[object]] = {}
+
+    async def prefetch_speech(sentence: str, index: int) -> None:
+        queue = prefetched[index]
+        try:
+            async with prefetch_slots:
+                stream = tts.stream_audio(sentence)
+                try:
+                    async for piece in stream:
+                        # Providers may emit a whole file in one network read.
+                        # Split encoded bytes without decoding so queue capacity
+                        # also bounds memory, not just the number of objects.
+                        for offset in range(0, len(piece.data), PREFETCH_AUDIO_PIECE_BYTES):
+                            await queue.put(TTSAudioChunk(
+                                provider=piece.provider,
+                                data=piece.data[offset:offset + PREFETCH_AUDIO_PIECE_BYTES],
+                            ))
+                finally:
+                    await stream.aclose()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            await queue.put(error)
+        await queue.put(None)
+
+    async def prefetched_speech(index: int) -> AsyncIterator[TTSAudioChunk]:
+        queue = prefetched[index]
+        while True:
+            piece = await queue.get()
+            if piece is None:
+                return
+            if isinstance(piece, Exception):
+                raise piece
+            assert isinstance(piece, TTSAudioChunk)
+            yield piece
 
     def remember_tail(part: str) -> None:
         nonlocal pending_tail_buffer, pending_tail_overflow
@@ -214,7 +278,7 @@ async def _stream_turn_bound(
             pending_tail_overflow = True
 
     async def queue_phrase(sentence: str) -> bool:
-        nonlocal chunk_index, phrases_queued, speech_coverage_issue
+        nonlocal chunk_index, phrases_queued, speech_coverage_issue, opening_words
         assert audio_queue is not None
         if full_voice_mode and len(sentence) > BOUNDED_FULL_TTS_MAX_INPUT_CHARS:
             speech_coverage_issue = (
@@ -237,18 +301,46 @@ async def _stream_turn_bound(
             return False
         chunk_index += 1
         phrases_queued += 1
+        if chunk_index == 1:
+            opening_words = _word_count(sentence)
         trace.mark("tts_phrase_ready", chunk=chunk_index, words=_word_count(sentence))
+        # Keep the opening available for short-reply coalescing. Later phrases
+        # synthesize concurrently with delivery of earlier audio, in bounded
+        # queues; the consumer still sends every byte strictly in phrase order.
+        if chunk_index > 1 and (opening_words > 3 or _word_count(sentence) > 10) and audio_stream_sink is not None and callable(getattr(tts, "stream_audio", None)) and not full_voice_mode and max_tts_phrases is None:
+            prefetched[chunk_index] = asyncio.Queue(maxsize=2)
+            task = asyncio.create_task(prefetch_speech(sentence, chunk_index))
+            prefetch_tasks.add(task)
         await audio_queue.put((sentence, chunk_index))
         return True
 
     async def synthesize_queued_audio() -> None:
         nonlocal chunk_index, speech_coverage_issue, speech_segments_delivered
         assert audio_queue is not None
+        deferred: tuple[str, int] | None = None
         while True:
-            item = await audio_queue.get()
+            item = deferred if deferred is not None else await audio_queue.get()
+            deferred = None
             if item is None:
                 return
             sentence, current_chunk = item
+            stop_after = False
+            # A tiny opener is often followed by the entire short answer within
+            # a few tokens. Allow a bounded grace period to avoid two cloud calls.
+            # Diagnostic request limits keep their original phrase semantics.
+            if current_chunk == 1 and _word_count(sentence) <= 3 and max_tts_phrases is None:
+                try:
+                    following = await asyncio.wait_for(audio_queue.get(), timeout=0.12)
+                except TimeoutError:
+                    following = None
+                else:
+                    if following is None:
+                        stop_after = True
+                    elif following[1] not in prefetched and _word_count(sentence) + _word_count(following[0]) <= 10:
+                        sentence = sentence + " " + following[0]
+                        trace.mark("tts_short_reply_coalesced", chunk=current_chunk)
+                    else:
+                        deferred = following
             tts_started = perf_counter()
             trace.mark(
                 "tts_synthesis_start",
@@ -258,7 +350,10 @@ async def _stream_turn_bound(
             try:
                 stream_method = getattr(tts, "stream_audio", None)
                 if audio_stream_sink is not None and callable(stream_method):
-                    await audio_stream_sink(stream_method(sentence), current_chunk)
+                    await audio_stream_sink(
+                        prefetched_speech(current_chunk) if current_chunk in prefetched
+                        else stream_method(sentence), current_chunk
+                    )
                     speech_segments_delivered += 1
                     trace.mark(
                         "tts_stream_sink_complete",
@@ -285,6 +380,8 @@ async def _stream_turn_bound(
                     speech_coverage_issue = (
                         f"audio segment {current_chunk} failed ({type(error).__name__})"
                     )
+            if stop_after:
+                return
 
     if audio_sink is not None or audio_stream_sink is not None:
         audio_queue = asyncio.Queue(maxsize=2)
@@ -305,6 +402,7 @@ async def _stream_turn_bound(
                         sentence_buffer,
                         allow_short_first_chunk=not first_tts_chunk_sent,
                         first_chunk_max_words=first_chunk_max_words,
+                        natural_boundaries=not full_voice_mode and max_tts_phrases is None,
                     )
                     for chunk in chunks:
                         if full_voice_mode:
@@ -343,6 +441,9 @@ async def _stream_turn_bound(
                 await queue_phrase(sentence_buffer.strip())
             await audio_queue.put(None)
     except BaseException:
+        for task in prefetch_tasks:
+            task.cancel()
+        await asyncio.gather(*prefetch_tasks, return_exceptions=True)
         if tts_worker is not None and not tts_worker.done():
             tts_worker.cancel()
         if tts_worker is not None:
@@ -359,7 +460,12 @@ async def _stream_turn_bound(
     await memory.add(active_session, Message(role="assistant", content=reply))
     result = ChatResponse(session_id=active_session, reply=reply)
     if tts_worker is not None:
-        await tts_worker
+        try:
+            await tts_worker
+        finally:
+            for task in prefetch_tasks:
+                task.cancel()
+            await asyncio.gather(*prefetch_tasks, return_exceptions=True)
     if full_voice_mode:
         coverage_complete = speech_coverage_issue is None
         coverage_message = (

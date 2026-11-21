@@ -52,6 +52,12 @@ Local `ENVIRONMENT=development` keeps the browser convenient without a login. Fo
 
 HTTP paid routes, generated audio, metrics, and `/ws/chat` require that browser session in public mode. Rate limits, active-session caps, and provider concurrency are currently in-process; each Railway replica enforces its own limits. Before scaling to multiple replicas or exposing a high-traffic service, put a shared limiter (for example Redis) and edge/body-size limits in front of it. `/health` remains public for Railway health checks. ESP32 device-token authentication is independent and unchanged.
 
+## Deploy to Render (Docker)
+
+Create a Docker Web Service from the `main` branch and keep one instance for this in-process session/memory configuration. In the service settings, set the HTTP Health Check Path to `/health`; this is Render's readiness/recovery check, not a guarantee that a Free instance stays awake. Render provides `RENDER_EXTERNAL_URL` automatically.
+
+If you specifically want a best-effort keepalive on a Free web service, add `RENDER_KEEPALIVE_INTERVAL_SECONDS=20` in Render's Environment settings. Bella will request its own public `/health` URL every 20 seconds after startup. This may prevent idle spin-down while those requests are routed to the service, but it cannot prevent platform-initiated restarts or outages. Keeping a Free instance running continuously uses about 720 of the workspace's 750 monthly Free instance hours, so use an always-on paid plan for reliable availability and leave the keepalive variable unset (or `0`) there. Add the same production authentication and OpenRouter variables described above in Render's Environment settings; do not commit `.env` or secrets.
+
 Kokoro 82M is billed by input characters at $0.62 per million characters: about $0.000062 for 100 characters, $0.00062 for 1,000 characters, and $0.00248 for 4,000 characters. Its 4K context is a request-size limit, not a $0.62 charge. `OPENROUTER_TTS_TIMEOUT_SECONDS=8` protects conversational latency by falling back to Edge if Kokoro is slow or fails.
 
 ## Choose the final STT model from evidence

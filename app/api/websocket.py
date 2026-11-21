@@ -70,7 +70,41 @@ async def chat_socket(websocket: WebSocket) -> None:
     active_capture_id: str | None = None
     session_id: str | None = None
     streaming_mp3 = False
+    voice_engine = settings.voice_engine_default
     diagnostic_recording_claimed = False
+    active_turn: asyncio.Task[None] | None = None
+
+    async def cancel_active_turn() -> None:
+        nonlocal active_turn
+        if active_turn is not None:
+            active_turn.cancel()
+            await asyncio.gather(active_turn, return_exceptions=True)
+            active_turn = None
+
+    async def generate_audio_turn(
+        audio: list[bytes], capture_id: str | None, trace: VoiceTrace, selected_engine: str
+    ) -> None:
+        nonlocal session_id
+        if not await websocket.app.state.voice_turn_gate.acquire():
+            await emit(websocket, "error", code="capacity", message="Bella is busy; try again shortly")
+            return
+        try:
+            async with provider_budget_scope(settings.voice_test_mode) as budget:
+                try:
+                    session_id = await _handle_audio(
+                        websocket, audio, session_id, streaming_mp3=streaming_mp3,
+                        capture_id=capture_id, voice_trace=trace, voice_engine=selected_engine,
+                    )
+                finally:
+                    await log_budget_summary(budget, trace_id=trace.trace_id)
+        except asyncio.CancelledError:
+            trace.mark("voice_turn_cancelled")
+            raise
+        except Exception:
+            logger.exception("Voice turn failed")
+            await emit(websocket, "error", message="Could not process this voice turn")
+        finally:
+            await websocket.app.state.voice_turn_gate.release()
 
     async def reject_recording(message: str, code: str = "invalid_audio") -> None:
         nonlocal recording_bytes, recording_started_at, recording_slot_owned, discard_recording
@@ -97,9 +131,28 @@ async def chat_socket(websocket: WebSocket) -> None:
                 await reject_recording("WebSocket message exceeds the frame size limit", "frame_too_large")
                 continue
             event = WebSocketEvent.model_validate_json(raw)
+            if event.type == 'cancel_recording':
+                await cancel_active_turn()
+                if partial_task is not None:
+                    partial_task.cancel()
+                    await asyncio.gather(partial_task, return_exceptions=True)
+                    partial_task = None
+                chunks.clear()
+                recording_bytes = 0
+                recording_started_at = None
+                discard_recording = False
+                active_capture_reset()
+                if recording_slot_owned:
+                    await websocket.app.state.recording_gate.release()
+                    recording_slot_owned = False
+                continue
             session_id = event.session_id or session_id
             if event.type == "client_capabilities":
                 streaming_mp3 = event.streaming_mp3 is True
+                if event.voice_engine is not None:
+                    voice_engine = event.voice_engine
+                await emit(websocket, "recording_limits", max_seconds=settings.max_ws_recording_seconds)
+                await emit(websocket, "voice_engine_selected", voice_engine=voice_engine)
                 continue
             if event.type == "audio_chunk":
                 if discard_recording:
@@ -108,6 +161,7 @@ async def chat_socket(websocket: WebSocket) -> None:
                     await reject_recording("Audio frame is empty")
                     continue
                 if recording_started_at is None:
+                    await cancel_active_turn()
                     allowed = await websocket.app.state.rate_limiter.allow(
                         f"voice:{principal}", settings.voice_requests_per_minute
                     )
@@ -163,6 +217,7 @@ async def chat_socket(websocket: WebSocket) -> None:
                     )
                 continue
             if event.type == "text" and event.data:
+                await cancel_active_turn()
                 if len(event.data) > 20_000:
                     await emit(websocket, "error", code="text_too_large", message="Message is too long")
                     continue
@@ -191,7 +246,9 @@ async def chat_socket(websocket: WebSocket) -> None:
                             continue
                     async with provider_budget_scope(settings.voice_test_mode) as budget:
                         try:
-                            session_id = (await _handle_text(websocket, event.data, session_id)).session_id
+                            session_id = (await _handle_text(
+                                websocket, event.data, session_id, voice_engine=voice_engine
+                            )).session_id
                         finally:
                             await log_budget_summary(budget)
                 finally:
@@ -223,26 +280,10 @@ async def chat_socket(websocket: WebSocket) -> None:
                 )
                 await _finish_interim_before_final(partial_task, capture_id)
                 try:
-                    if not await websocket.app.state.voice_turn_gate.acquire():
-                        await emit(websocket, "error", code="capacity", message="Bella is busy; try again shortly")
-                        continue
-                    try:
-                        async with provider_budget_scope(settings.voice_test_mode) as budget:
-                            try:
-                                session_id = await _handle_audio(
-                                    websocket,
-                                    chunks,
-                                    session_id,
-                                    streaming_mp3=streaming_mp3,
-                                    capture_id=capture_id,
-                                    voice_trace=voice_trace,
-                                )
-                            finally:
-                                await log_budget_summary(
-                                    budget, trace_id=voice_trace.trace_id
-                                )
-                    finally:
-                        await websocket.app.state.voice_turn_gate.release()
+                    await cancel_active_turn()
+                    active_turn = asyncio.create_task(
+                        generate_audio_turn(list(chunks), capture_id, voice_trace, voice_engine)
+                    )
                 finally:
                     chunks.clear()
                     recording_bytes = 0
@@ -261,6 +302,7 @@ async def chat_socket(websocket: WebSocket) -> None:
         logger.exception("WebSocket processing failed")
         await emit(websocket, "error", message="Could not process this request")
     finally:
+        await cancel_active_turn()
         if partial_task is not None and not partial_task.done():
             partial_task.cancel()
             await asyncio.gather(partial_task, return_exceptions=True)
@@ -310,12 +352,17 @@ async def _handle_text(
     voice_trace: VoiceTrace | None = None,
     max_tts_phrases: int | None = None,
     full_voice_mode: bool = False,
+    ai_override=None,
+    voice_engine: str = "current",
+    audio_mini_input: str | None = None,
 ) -> ChatResponse:
     """Stream response text and optionally synthesize completed sentences in parallel."""
     trace = voice_trace or VoiceTrace(started_at=turn_started or perf_counter())
     trace_token = bind_voice_trace(trace)
     send_lock = asyncio.Lock()
     first_text_delta_logged = False
+    first_pcm_chunk_logged = False
+    use_audio_mini = voice_engine == "gpt_audio_mini"
 
     async def emit_turn(event_type: str, **payload: object) -> None:
         async with send_lock:
@@ -388,6 +435,21 @@ async def _handle_text(
             chunk_index=chunk_index,
         )
 
+    async def send_pcm_audio(data: bytes) -> None:
+        nonlocal first_pcm_chunk_logged
+        if not data:
+            return
+        if not first_pcm_chunk_logged:
+            trace.mark(
+                "first_audio_bytes_sent_to_browser",
+                provider="openrouter_gpt_audio_mini",
+                bytes=len(data),
+            )
+            first_pcm_chunk_logged = True
+            await emit_turn("status", text="Speaking...")
+        async with send_lock:
+            await websocket.send_bytes(data)
+
     async def send_speech_coverage(complete: bool, message: str) -> None:
         await emit_turn(
             "speech_coverage",
@@ -397,12 +459,26 @@ async def _handle_text(
         )
 
     try:
+        if use_audio_mini:
+            ai_override = websocket.app.state.openrouter_audio_mini.create_turn(
+                audio_sink=send_pcm_audio,
+                audio_input=audio_mini_input,
+                trace_id=trace.trace_id,
+            )
+            await emit_turn(
+                "pcm_stream_start",
+                codec="pcm_s16le",
+                sample_rate=24_000,
+                channels=1,
+                trace_id=trace.trace_id,
+                model=websocket.app.state.settings.voice_audio_model,
+            )
         result = await stream_turn(
             text=text,
             session_id=session_id,
             memory=websocket.app.state.memory,
             context=websocket.app.state.context,
-            ai=websocket.app.state.ai,
+            ai=ai_override or websocket.app.state.ai,
             tts=websocket.app.state.tts,
             token_sink=send_token,
             audio_sink=send_audio if stream_audio and not streaming_audio else None,
@@ -415,7 +491,10 @@ async def _handle_text(
             max_tts_phrases=max_tts_phrases,
             full_voice_mode=full_voice_mode,
             speech_coverage_sink=send_speech_coverage if full_voice_mode else None,
+            spoken_reply=use_audio_mini,
         )
+        if use_audio_mini:
+            await emit_turn("pcm_stream_end", trace_id=trace.trace_id)
         trace.mark("browser_reply_complete_sent")
         await emit_turn(
             "reply",
@@ -426,6 +505,14 @@ async def _handle_text(
         if send_ready:
             await emit_turn("status", text="Ready")
         return result
+    except asyncio.CancelledError:
+        if use_audio_mini:
+            await emit_turn("pcm_stream_abort", trace_id=trace.trace_id)
+        raise
+    except Exception:
+        if use_audio_mini:
+            await emit_turn("pcm_stream_abort", trace_id=trace.trace_id)
+        raise
     finally:
         reset_voice_trace(trace_token)
 
@@ -438,6 +525,7 @@ async def _handle_audio(
     streaming_mp3: bool = False,
     capture_id: str | None = None,
     voice_trace: VoiceTrace | None = None,
+    voice_engine: str = "current",
 ) -> str:
     if not chunks:
         await emit(websocket, "error", message="No audio was received")
@@ -460,6 +548,37 @@ async def _handle_audio(
         async with aiofiles.open(path, "wb") as audio_file:
             await audio_file.write(b"".join(chunks))
         await emit(websocket, "status", text="Processing...")
+        if voice_engine == "gpt_audio_mini":
+            audio_input = await websocket.app.state.openrouter_audio_mini.prepare_audio(path)
+            await emit(
+                websocket,
+                "voice_input_received",
+                trace_id=voice_trace.trace_id,
+                capture_id=capture_id,
+            )
+            result = await _handle_text(
+                websocket,
+                "[Voice message; transcript not retained]",
+                session_id,
+                send_ready=False,
+                turn_started=turn_started,
+                voice_trace=voice_trace,
+                voice_engine=voice_engine,
+                audio_mini_input=audio_input,
+            )
+            await emit(websocket, "status", text="Ready")
+            voice_trace.mark("server_turn_complete")
+            return result.session_id
+        if settings.voice_audio_input_enabled and not settings.voice_test_enabled:
+            ai_turn = await websocket.app.state.audio_reply.prepare(path)
+            await emit(websocket, "voice_input_received", trace_id=voice_trace.trace_id,
+                       capture_id=capture_id)
+            result = await _handle_text(
+                websocket, '[Voice message; transcript not retained]', session_id,
+                send_ready=False, stream_audio=True, streaming_audio=streaming_mp3,
+                turn_started=turn_started, voice_trace=voice_trace, ai_override=ai_turn)
+            await emit(websocket, "status", text="Ready")
+            return result.session_id
         if settings.voice_test_enabled:
             bounded_full_voice = settings.bounded_full_voice_test
             await emit(

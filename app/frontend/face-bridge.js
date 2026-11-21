@@ -2,7 +2,7 @@
 // Opt-in polling avoids consuming the voice latch or changing offline simulation.
 const panel=document.createElement('section');
 panel.style.cssText='display:block;border:1px solid #41404c;padding:18px;border-radius:16px';
-panel.innerHTML='<label>Mode <select id="face-mode"><option value="simulation">Simulation</option><option value="connected">Connected device</option></select></label><label>Device <select id="face-device"></select></label><form id="face-login" hidden><input type="password" autocomplete="current-password" aria-label="Bella password" placeholder="Bella access password"><button>Sign in</button></form><p id="face-connection" role="status">Simulation · no network connection</p><p id="face-device-state"></p>';
+panel.innerHTML='<label>Mode <select id="face-mode"><option value="simulation">Simulation</option><option value="browser">Browser voice (this browser)</option><option value="connected">Connected device</option></select></label><label>Device <select id="face-device"></select></label><form id="face-login" hidden><input type="password" autocomplete="current-password" aria-label="Bella password" placeholder="Bella access password"><button>Sign in</button></form><p id="face-connection" role="status">Simulation · no network connection</p><p id="face-browser-state">Browser expression: idle · destination: browser only</p><p id="face-device-state"></p>';
 document.querySelector('canvas').after(panel);
 const mode=document.querySelector('#face-mode'),device=document.querySelector('#face-device'),connection=document.querySelector('#face-connection'),deviceState=document.querySelector('#face-device-state'),login=document.querySelector('#face-login');
 let polling=false,generation=0,connectedTimer;
@@ -23,11 +23,12 @@ async function refresh(){
   const record=records.find(item=>item.device_id===device.value);
   const expression=record?.connected?record.face_expression:'offline';
   window.bellaFaceRemoteExpression=expression.toUpperCase();
-  deviceState.textContent=record?`${record.connected?'Online':'Offline'} · heartbeat ${record.last_heartbeat||'none'} · face ${record.face_expression} · conversation ${record.state} · touch ${record.last_touch||'none'} · command ${record.command_status||'none'} (engine acceptance is not TFT delivery)`:'No provisioned device has connected';
+    deviceState.textContent=record?`${record.connected?'Online':'Offline'} · heartbeat ${record.last_heartbeat||'none'} · device face ${record.face_expression} · conversation ${record.state} · touch ${record.last_touch||'none'} · command ${record.command_status||'none'} · server audio complete ${record.server_audio_complete===true} · device audio ${record.playback_status||'not reported'} · basis ${record.playback_basis||'not reported'} · estimated ${record.playback_estimated!==false} · playback turn/sequence ${record.playback_turn??'-'}/${record.playback_sequence??'-'} · error ${record.last_error||'none'} (device reports are not acoustic/TFT proof)`:'No provisioned device has connected';
  }catch(error){if(epoch===generation){connection.textContent=error.message;window.bellaFaceRemoteExpression='OFFLINE';}}
  finally{polling=false;}
 }
-mode.onchange=()=>{generation++;window.bellaFaceConnected=mode.value==='connected';clearInterval(connectedTimer);if(window.bellaFaceConnected){refresh();connectedTimer=setInterval(refresh,3000);}else{connection.textContent='Simulation · no network connection';deviceState.textContent='';login.hidden=true;}};
+mode.onchange=()=>{generation++;window.bellaFaceConnected=mode.value==='connected';window.bellaFaceBrowserVoice=mode.value==='browser';clearInterval(connectedTimer);if(window.bellaFaceConnected){refresh();connectedTimer=setInterval(refresh,3000);}else{connection.textContent=window.bellaFaceBrowserVoice?'Browser voice · same-origin tab events · no device playback claim':'Simulation · no network connection';deviceState.textContent='';login.hidden=true;}};
+setInterval(()=>{document.querySelector('#face-browser-state').textContent=`Browser expression: ${window.BellaExpressions.controller.current()} · destination: browser only`;},150);
 login.onsubmit=async event=>{event.preventDefault();const input=login.querySelector('input');try{const response=await fetch('/auth/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:input.value})});input.value='';if(!response.ok)throw new Error('Sign in failed');await refresh();}catch(error){connection.textContent=error.message;}};
 document.querySelector('#emotions').addEventListener('click',async event=>{
  const expression=event.target.dataset.state;

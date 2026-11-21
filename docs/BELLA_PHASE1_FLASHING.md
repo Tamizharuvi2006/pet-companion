@@ -1,28 +1,45 @@
-# Bella Phase 1 build and flashing
+# Bella firmware build, flash, and provisioning
 
-## Prerequisites
+This guide supersedes the original Phase 1 notes. Current firmware no longer reads Wi-Fi, device-token, or backend URL macros from `secrets.h`; do not copy the old example or embed credentials in firmware.
 
-- PlatformIO Core with the Espressif32 platform and ESP-IDF framework packages (the first build downloads the toolchain and ESP-IDF components).
-- Correct board selected in `firmware/bella_esp32/platformio.ini` (`esp32dev` is the current generic classic ESP32 build target, not a verified identification of your physical board/module).
-- USB data cable and a known COM port. The repo audit found no serial ports, so no board was available for identification or flashing at that time.
+## Main ESP32
 
-## Configure, build, and flash
+1. Identify the exact ESP32 board/module, flash size, occupied GPIOs, and attached boot-strapping pulls. Review [the final hardware profile matrix](BELLA_FINAL_HARDWARE_PROFILE_MATRIX.md). Keep Servo 2 on GPIO12 disabled until its reset strap is verified; GPIO21 remains reserved.
+2. Install PlatformIO Core, connect the board, and identify its COM port.
+3. From the repository root, build the diagnostic image without flashing:
 
-1. Copy `firmware/bella_esp32/include/secrets.h.example` to `firmware/bella_esp32/include/secrets.h` and fill in local Wi-Fi, backend WebSocket URL, device ID, and a long random per-device token. This file is ignored by Git. Do not put provider/API keys in firmware.
-2. Start the backend bound to the LAN interface: `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000`. Put the computer's reachable LAN address (not `127.0.0.1`) in the firmware URL. Restrict the Windows firewall rule to the private LAN.
-3. Add the matching `device-id=token` to backend `.env` as `BELLA_DEVICE_TOKENS`. Never publish the token.
-4. Build without flashing. PlatformIO rejected this checkout's path because it contains spaces, so build from a no-space copy/checkout (for example `C:\bella-backend`) with `pio run -d C:\bella-backend\firmware\bella_esp32`. The same applies to `firmware\bella_esp32_cam`. The current source was compiled successfully from temporary no-space validation copies; no upload was performed.
-5. Identify the actual ESP32 model and COM port from the device manager, and verify power/wiring against `BELLA_PHASE1_WIRING.md`.
-6. Only after the board, port, and safe wiring are confirmed, flash from the same no-space checkout/copy with `pio run -d C:\bella-backend\firmware\bella_esp32 -t upload --upload-port COMx` (replace `COMx`). No flash operation was performed as part of this implementation.
+   ```powershell
+   .\scripts\build-firmware.ps1 -Profile diagnostic
+   ```
 
-The main firmware compiles with servos disabled and unknown TFT rendering disabled. Servo 2 is GPIO12 and is independently disabled by `BELLA_SERVO2_GPIO12_ENABLED=0`; turning on the general servo flag does not enable Servo 2. To enable Servo 2 later, first identify the exact ESP32/module and flash voltage, inspect the GPIO12 reset pull state, and only then set `BELLA_GPIO12_STRAP_SAFE_CONFIRMED=1` together with the Servo 2 flag. A compile-time guard rejects Servo 2 enablement without that explicit confirmation. This flag cannot measure the hardware or prove the strap is safe. Espressif documents GPIO12/MTDI as the VDD_SDIO strap: it selects 1.8 V when high and the default 3.3 V when low, with module variants having different pull arrangements. Servo GPIOs initialize without a positioning pulse; a deliberate motion event is required to emit PWM. Keep servo power disconnected during reset/flash validation.
+   Use a display profile only when the exact physical TFT controller/resolution matches the matrix.
+4. After the board, wiring, and COM port are physically checked, flash with the confirmation-gated helper:
 
-GPIO21 is reserved for the existing physical connection and is not assigned by Bella firmware. The source pin audit lists all planned GPIO uses; compare every wire against it before flashing. If legacy camera UART remains on GPIO14/15, GPIO14 overlaps Touch 3 and GPIO15 needs its own strap review. Do not automatically rewire any such conflict. The firmware audio, Wi-Fi, WebSocket, touch, and distance paths still require physical validation before being considered operational.
+   ```powershell
+   .\scripts\flash-firmware.ps1 -Profile diagnostic -Port COM7 -Flash
+   ```
 
-## ESP32-CAM
+   The helper requires typing `FLASH COM7` before writing. A build never flashes by itself.
+5. Provision Wi-Fi, exact `wss://<host>/ws/device` URL, device ID, and the matching device token over local USB serial. Password/token prompts are hidden:
 
-`firmware/bella_esp32_cam` builds a disabled-by-default project. Its optional AI-Thinker pin profile is a convenience only and is not selected by default. Confirm exact PCB and image sensor before enabling. The camera firmware uses its own Wi-Fi and exposes `/health` and authenticated `/snapshot`; configure backend `BELLA_CAMERA_ENABLED`, `BELLA_CAMERA_BASE_URL`, and `BELLA_CAMERA_TOKEN` only after LAN capture is tested.
+   ```powershell
+   .\scripts\provision-device.ps1 -Port COM7
+   ```
 
-## Secure remote deployment
+   The values are stored in the device's `bella` NVS namespace. NVS is not flash-encrypted. For a confirmed momentary TTP223 only, use the optional `touch4-ptt-momentary` profile; otherwise Touch 4 remains a short Wink reaction.
 
-Do not send device credentials across public plaintext `ws://`. For Railway use a `wss://` URL with certificate verification (ESP32 firmware uses the ESP certificate bundle when enabled) and a unique secret token. Store camera credentials only in backend environment variables.
+## Optional ESP32-CAM
+
+Do not use the AI-Thinker profile unless the exact camera PCB and sensor match. The profile remains opt-in. After hardware identification, build/flash `camera-ai-thinker`, then provision over USB with:
+
+```powershell
+.\scripts\build-firmware.ps1 -Profile camera-ai-thinker
+.\scripts\flash-firmware.ps1 -Profile camera-ai-thinker -Port COM8 -Flash
+.\scripts\provision-camera.ps1 -Port COM8
+```
+
+Camera Wi-Fi and bearer token are stored in a separate `bella_cam` NVS namespace. The camera serves local HTTP; never expose port 80 or its bearer token over the public Internet. A Railway backend needs an owner-approved authenticated HTTPS/private-tunnel path before camera capture is enabled.
+
+## Acceptance
+
+Follow [the friend setup guide](BELLA_FRIEND_ONE_CLICK_SETUP.md) and [physical acceptance checklist](BELLA_PHYSICAL_ACCEPTANCE_CHECKLIST.md). Builds, mocked camera responses, and simulator tests are not physical acceptance. No firmware in this workspace was flashed.

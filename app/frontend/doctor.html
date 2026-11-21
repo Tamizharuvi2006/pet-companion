@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bella · Hardware Doctor</title>
+  <style>
+    :root{color-scheme:dark;--bg:#111216;--panel:#1b1b22;--line:#34343d;--muted:#aaa8b5;--text:#f2eff8;--mint:#8be2c2;--amber:#f1c27d;--red:#ff8297}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 50% -10%,#29223a 0,transparent 44%),var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif;padding:24px}
+    main{width:min(1040px,100%);margin:auto}header{display:flex;gap:18px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding:8px 0 20px}h1{font-size:24px;margin:0}a{color:#d9b9ff}button,select,input{font:inherit;color:inherit;background:#26252e;border:1px solid #494653;border-radius:10px;padding:10px 13px}button{cursor:pointer}button:hover{background:#393345}button:disabled{opacity:.45;cursor:not-allowed}.actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0}.muted{color:var(--muted)}.banner{padding:12px 14px;border:1px solid var(--line);border-radius:12px;margin:14px 0}.device{border:1px solid var(--line);border-radius:16px;background:#191920;padding:18px;margin:18px 0}.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}.check{border:1px solid var(--line);border-radius:12px;padding:13px;background:#202027}.check strong{display:block;margin-bottom:4px}.PASS{color:var(--mint)}.FAIL{color:var(--red)}.PENDING,.UNSUPPORTED{color:var(--amber)}.SIMULATED{color:#bdadff}.evidence{font-size:12px;color:var(--muted);overflow-wrap:anywhere}#camera-preview{display:block;max-width:min(100%,640px);max-height:480px;margin-top:14px;border-radius:12px;border:1px solid var(--line)}form{display:flex;gap:8px;flex-wrap:wrap}form[hidden]{display:none}@media(max-width:600px){body{padding:16px}header{align-items:flex-start;flex-direction:column}.actions>*{flex:1}}
+  </style>
+</head>
+<body><main>
+  <header><div><h1>Bella Hardware Doctor</h1><div class="muted">Read-only health evidence · no voice/provider calls</div></div><a href="/face.html">Back to Face Studio</a></header>
+  <p class="banner" id="status" role="status">Sign in to inspect configured devices. Reports omit credentials, transcripts and raw errors.</p>
+  <form id="login" hidden><input id="password" type="password" autocomplete="current-password" aria-label="Bella access password" placeholder="Bella access password"><button>Sign in</button></form>
+  <div class="actions"><select id="device" aria-label="Device"></select><button id="refresh">Refresh evidence</button><button id="download" disabled>Download sanitized report</button><button id="camera" disabled>Capture one camera frame</button></div>
+  <img id="camera-preview" alt="One camera frame captured after explicit request" hidden>
+  <section id="report" aria-live="polite"></section>
+  <p class="muted">PASS means the device reported that specific capability. Display visibility and audible speaker output always require a human physical check. PENDING is not a failure; SIMULATED is not physical evidence.</p>
+</main><script src="doctor.js"></script></body></html>

@@ -1,8 +1,10 @@
 import asyncio
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 
 import pytest
 
+from app.services import edge_tts_service
 from app.services.event_loop_monitor import sample_event_loop_lag
 from app.services.mp3_stream import first_valid_mp3_prefix, has_complete_mp3_frames
 
@@ -10,6 +12,29 @@ from app.services.mp3_stream import first_valid_mp3_prefix, has_complete_mp3_fra
 def _frame() -> bytes:
     # MPEG-1 Layer III, 128 kbps, 44.1 kHz, no padding (417 bytes per frame).
     return b"\xff\xfb\x90\x64" + bytes(413)
+
+
+def test_edge_times_out_before_valid_prefix_and_releases_slot(monkeypatch, tmp_path) -> None:
+    class StalledProvider:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def stream(self) -> AsyncIterator[dict[str, object]]:
+            yield {"type": "audio", "data": _frame()}
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(edge_tts_service.edge_tts, "Communicate", StalledProvider)
+    monkeypatch.setattr(edge_tts_service, "EDGE_FIRST_AUDIO_TIMEOUT_SECONDS", 0.02)
+
+    async def run() -> None:
+        slot = asyncio.Semaphore(1)
+        settings = SimpleNamespace(tts_voice="test", audio_dir=tmp_path)
+        service = edge_tts_service.EdgeTTSService(settings, slot)
+        with pytest.raises(RuntimeError, match="timed out before playable audio"):
+            await anext(service.stream_audio("Hello"))
+        assert not slot.locked()
+
+    asyncio.run(run())
 
 
 def test_requires_two_complete_consecutive_mp3_frames() -> None:

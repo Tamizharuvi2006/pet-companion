@@ -2,6 +2,7 @@
 #include "bella_device_ws.h"
 #include "bella_runtime.h"
 #include "bella_wifi.h"
+#include "bella_provisioning.h"
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -54,9 +55,8 @@ static void wifi_event_handler(void *, esp_event_base_t base, int32_t event_id, 
 }
 
 void bella_wifi_init() {
-    if (std::strlen(BELLA_WIFI_SSID) == 0 || std::strlen(BELLA_BACKEND_WS_URL) == 0) {
-        ESP_LOGE(TAG, "Wi-Fi/backend configuration missing; add ignored include/secrets.h");
-        bella_set_state(BellaState::Error);
+    if (!bella_provision_ready()) {
+        ESP_LOGW(TAG, "Waiting for local USB-serial provisioning; network remains offline");
         return;
     }
     g_wifi_events = xEventGroupCreate();
@@ -74,8 +74,8 @@ void bella_wifi_init() {
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, nullptr));
 
     wifi_config_t wifi_config{};
-    std::strncpy(reinterpret_cast<char *>(wifi_config.sta.ssid), BELLA_WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
-    std::strncpy(reinterpret_cast<char *>(wifi_config.sta.password), BELLA_WIFI_PASSWORD, sizeof(wifi_config.sta.password) - 1);
+    std::strncpy(reinterpret_cast<char *>(wifi_config.sta.ssid), bella_provision_wifi_ssid(), sizeof(wifi_config.sta.ssid) - 1);
+    std::strncpy(reinterpret_cast<char *>(wifi_config.sta.password), bella_provision_wifi_password(), sizeof(wifi_config.sta.password) - 1);
     wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;

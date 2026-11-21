@@ -1,4 +1,5 @@
 #include "cam_config.h"
+#include "bella_cam_provisioning.h"
 
 #include "esp_camera.h"
 #include "esp_event.h"
@@ -64,7 +65,8 @@ static esp_err_t health_handler(httpd_req_t *request) {
 }
 
 static esp_err_t snapshot_handler(httpd_req_t *request) {
-    if (std::strlen(BELLA_CAM_TOKEN) < 16) {
+    const char *token = bella_cam_token();
+    if (!bella_cam_provision_ready() || std::strlen(token) < 16) {
         return send_unavailable(request, "Camera token not configured");
     }
     char authorization[320]{};
@@ -73,7 +75,7 @@ static esp_err_t snapshot_handler(httpd_req_t *request) {
         return httpd_resp_send(request, "Unauthorized", HTTPD_RESP_USE_STRLEN);
     }
     char expected[320]{};
-    std::snprintf(expected, sizeof(expected), "Bearer %s", BELLA_CAM_TOKEN);
+    std::snprintf(expected, sizeof(expected), "Bearer %s", token);
     if (!constant_time_equal(authorization, expected)) {
         httpd_resp_set_status(request, "401 Unauthorized");
         return httpd_resp_send(request, "Unauthorized", HTTPD_RESP_USE_STRLEN);
@@ -170,12 +172,19 @@ extern "C" void app_main(void) {
     }
     ESP_ERROR_CHECK(result);
 
+    if (!bella_cam_provision_load()) {
+        ESP_LOGW(TAG, "Camera Wi-Fi/token are not provisioned; configure over local USB serial");
+        bella_cam_provision_start_serial();
+        return;
+    }
+    bella_cam_provision_start_serial();
+
     const esp_err_t camera_result = camera_init_profile();
     if (camera_result != ESP_OK) {
         ESP_LOGW(TAG, "Camera not initialized: %s", esp_err_to_name(camera_result));
     }
-    if (std::strlen(BELLA_CAM_WIFI_SSID) == 0 || std::strlen(BELLA_CAM_TOKEN) < 16) {
-        ESP_LOGE(TAG, "Wi-Fi or camera token is missing; configure ignored include/secrets.h");
+    if (!bella_cam_provision_ready()) {
+        ESP_LOGE(TAG, "Camera Wi-Fi/token provisioning is unavailable");
         return;
     }
 
@@ -187,8 +196,8 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, nullptr));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, nullptr));
     wifi_config_t wifi_config{};
-    std::strncpy(reinterpret_cast<char *>(wifi_config.sta.ssid), BELLA_CAM_WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
-    std::strncpy(reinterpret_cast<char *>(wifi_config.sta.password), BELLA_CAM_WIFI_PASSWORD, sizeof(wifi_config.sta.password) - 1);
+    std::strncpy(reinterpret_cast<char *>(wifi_config.sta.ssid), bella_cam_wifi_ssid(), sizeof(wifi_config.sta.ssid) - 1);
+    std::strncpy(reinterpret_cast<char *>(wifi_config.sta.password), bella_cam_wifi_password(), sizeof(wifi_config.sta.password) - 1);
     wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));

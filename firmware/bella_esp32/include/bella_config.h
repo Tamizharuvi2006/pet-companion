@@ -1,34 +1,10 @@
 #pragma once
 
-#if __has_include("secrets.h")
-#include "secrets.h"
-#endif
-
-#ifndef BELLA_WIFI_SSID
-#define BELLA_WIFI_SSID ""
-#endif
-#ifndef BELLA_WIFI_PASSWORD
-#define BELLA_WIFI_PASSWORD ""
-#endif
-#ifndef BELLA_BACKEND_WS_URL
-#define BELLA_BACKEND_WS_URL "ws://192.168.1.10:8000/ws/device"
-#endif
-#ifndef BELLA_DEVICE_ID
-#define BELLA_DEVICE_ID "device-001"
-#endif
-#ifndef BELLA_DEVICE_TOKEN
-#define BELLA_DEVICE_TOKEN ""
-#endif
-
 #define BELLA_FIRMWARE_VERSION "0.1.0"
 #define BELLA_AUDIO_SAMPLE_RATE_HZ 16000
 #define BELLA_AUDIO_FRAME_SAMPLES 640
 #define BELLA_AUDIO_FRAME_BYTES (BELLA_AUDIO_FRAME_SAMPLES * 2)
 #define BELLA_PROTOCOL_VERSION 1
-#ifndef BELLA_ALLOW_INSECURE_LOCAL_WS
-#define BELLA_ALLOW_INSECURE_LOCAL_WS 0
-#endif
-
 #define BELLA_PIN_TFT_CS 5
 #define BELLA_PIN_TFT_RESET 4
 #define BELLA_PIN_TFT_DC 2
@@ -72,4 +48,22 @@
 #endif
 #ifndef BELLA_CAMERA_PROFILE_AI_THINKER
 #define BELLA_CAMERA_PROFILE_AI_THINKER 0
+#endif
+#ifndef BELLA_TOUCH4_PTT_ENABLED
+#define BELLA_TOUCH4_PTT_ENABLED 0
+#endif
+#ifndef BELLA_TOUCH4_PTT_LONG_PRESS_MS
+#define BELLA_TOUCH4_PTT_LONG_PRESS_MS 900
+#endif
+#ifndef BELLA_DEVICE_RECORDING_MAX_MS
+#define BELLA_DEVICE_RECORDING_MAX_MS 10000
+#endif
+#ifndef BELLA_PRESENCE_ENTER_MM
+#define BELLA_PRESENCE_ENTER_MM 700
+#endif
+#ifndef BELLA_PRESENCE_EXIT_MM
+#define BELLA_PRESENCE_EXIT_MM 900
+#endif
+#if BELLA_TOUCH4_PTT_ENABLED && BELLA_TOUCH4_PTT_LONG_PRESS_MS < 500
+#error "Touch 4 push-to-talk long press must be at least 500 ms"
 #endif

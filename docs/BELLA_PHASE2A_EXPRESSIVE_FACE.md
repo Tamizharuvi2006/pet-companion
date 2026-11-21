@@ -30,8 +30,9 @@ The existing config matches TFT CS5/RST4/DC2/MOSI23/SCLK18/MISO19 and touch
 32/33/14/27. These numeric assignments do not overlap the configured shared I2S
 26/25, mic34, speaker22, distance16/17 or servo13/12. GPIO21 remains untouched.
 Physical GPIO21 usage is unspecified and must be checked against real wiring.
-GPIO12 servo strap guards remain unchanged and disabled by default. TFT GPIO2
-and GPIO5 are also boot-strap-sensitive: physical startup wiring needs review.
+GPIO12 servo strap guards remain unchanged and disabled by default. GPIO2 and
+GPIO5 are also boot-strap-sensitive: physical startup wiring needs review.
+GPIO4 is the TFT reset assignment, not a classic ESP32 strap pin.
 Touch4 requires the previously specified physical move to GPIO27.
 
 No controller, resolution or color format was confirmed. The existing display

@@ -1,6 +1,7 @@
 import logging
 import asyncio
-from contextlib import asynccontextmanager
+import os
+from contextlib import asynccontextmanager, suppress
 from time import perf_counter
 
 from fastapi import FastAPI, HTTPException, Request
@@ -27,8 +28,10 @@ from app.services.provider_budget import log_budget_summary, provider_budget_sco
 from app.services.metrics_service import MetricsService
 from app.services.openrouter_stt_service import OpenRouterSTTService
 from app.services.openrouter_tts_service import OpenRouterTTSService
+from app.services.openrouter_audio_mini_service import OpenRouterAudioMiniService
 from app.services.request_limits import CapacityGate, SlidingWindowRateLimiter
 from app.services.browser_security import browser_principal
+from app.services.render_keepalive import start_render_keepalive
 from app.services.tts_service import TTSService
 from app.services.whisper_service import WhisperService
 
@@ -69,6 +72,11 @@ async def lifespan(app: FastAPI):
     app.state.device_registry = DeviceRegistry()
     app.state.memory = ShortTermMemory(settings.max_history_messages)
     app.state.ai = AIService(settings, app.state.provider_slots)
+    app.state.openrouter_audio_mini = OpenRouterAudioMiniService(
+        settings, app.state.provider_slots
+    )
+    from app.services.audio_reply_service import AudioReplyService
+    app.state.audio_reply = AudioReplyService(settings, app.state.provider_slots) if settings.voice_audio_input_enabled else None
     app.state.context = ContextService()
     edge_tts = EdgeTTSService(settings, app.state.provider_slots)
     local_whisper = WhisperService(settings)
@@ -85,13 +93,24 @@ async def lifespan(app: FastAPI):
         ) from error
     app.state.whisper = OpenRouterSTTService(settings, local_whisper, app.state.provider_slots)
     app.state.metrics = MetricsService()
+    render_keepalive_task: asyncio.Task[None] | None = None
     # Preload once per server process. Transcription requests reuse this model.
     await app.state.whisper.load()
     await app.state.tts.load()
+    render_keepalive_task = start_render_keepalive(
+        os.getenv("RENDER_EXTERNAL_URL"), settings.render_keepalive_interval_seconds
+    )
     try:
         yield
     finally:
+        if render_keepalive_task is not None:
+            render_keepalive_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await render_keepalive_task
         await app.state.ai.close()
+        await app.state.openrouter_audio_mini.close()
+        if app.state.audio_reply is not None:
+            await app.state.audio_reply.close()
         await app.state.tts.close()
         await app.state.whisper.close()
 

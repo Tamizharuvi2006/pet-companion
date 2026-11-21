@@ -67,3 +67,4 @@ class WebSocketEvent(BaseModel):
     capture_id: str | None = Field(default=None, max_length=64)
     duration_ms: int | None = Field(default=None, ge=1, le=10_000)
     streaming_mp3: bool | None = None
+    voice_engine: Literal["current", "gpt_audio_mini"] | None = None

@@ -295,6 +295,177 @@ async def stream_mp3_chunks_as_pcm(
                 await process.wait()
 
 
+async def stream_pcm24_chunks_as_device_audio(
+    websocket: WebSocket,
+    pcm_chunks: AsyncIterator[bytes],
+    *,
+    turn_id: int,
+    chunk_id: int,
+    trace_id: str,
+    max_frame_bytes: int,
+    send_lock: Lock,
+) -> int:
+    """Resample streamed 24 kHz mono PCM16 to the device's 16 kHz wire format."""
+    frame_bytes = min(PCM_FRAME_BYTES, max_frame_bytes)
+    frame_bytes -= frame_bytes % 2
+    if frame_bytes < 2:
+        raise ValueError("configured device audio frame size is too small")
+
+    started = perf_counter()
+    mark_voice_stage("audio_conversion_started", provider="ffmpeg_pcm_resample", chunk=chunk_id)
+    process: asyncio.subprocess.Process | None = None
+    reader_task: asyncio.Task[tuple[int, int]] | None = None
+    try:
+        iterator = pcm_chunks.__aiter__()
+        try:
+            first_piece = await anext(iterator)
+        except StopAsyncIteration as error:
+            raise RuntimeError("GPT Audio Mini returned no PCM audio") from error
+        if not first_piece or len(first_piece) % 2:
+            raise RuntimeError("GPT Audio Mini returned an incomplete PCM16 chunk")
+
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-fflags", "nobuffer", "-f", "s16le", "-ar", "24000", "-ac", "1",
+            "-i", "pipe:0", "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1",
+            "-ar", str(SAMPLE_RATE_HZ), "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        if process.stdin is None or process.stdout is None:
+            raise RuntimeError("FFmpeg did not provide streaming pipes")
+
+        await _send_locked(
+            websocket,
+            send_lock,
+            {
+                "type": "tts_chunk_start",
+                "version": 1,
+                "turn_id": turn_id,
+                "chunk_id": chunk_id,
+                "trace_id": trace_id,
+                "sample_rate_hz": SAMPLE_RATE_HZ,
+                "channels": 1,
+                "bits_per_sample": 16,
+                "frame_duration_ms": 40,
+                "codec": "pcm_s16le",
+            },
+        )
+
+        async def forward_pcm() -> tuple[int, int]:
+            assert process is not None and process.stdout is not None
+            sequence = 0
+            total_pcm_bytes = 0
+            while True:
+                try:
+                    payload = await process.stdout.readexactly(frame_bytes)
+                except IncompleteReadError as error:
+                    payload = error.partial
+                    if not payload:
+                        break
+                if len(payload) % 2:
+                    raise RuntimeError("FFmpeg returned a partial PCM sample")
+                if sequence == 0:
+                    mark_voice_stage(
+                        "first_audio_frame_sent_to_device",
+                        duration_seconds=perf_counter() - started,
+                        provider="ffmpeg_pcm_resample",
+                        chunk=chunk_id,
+                        bytes=len(payload),
+                    )
+                await _send_locked(
+                    websocket,
+                    send_lock,
+                    pack_audio_frame(AUDIO_TYPE_SPEAKER, turn_id, sequence, payload),
+                )
+                total_pcm_bytes += len(payload)
+                sequence += 1
+                if len(payload) < frame_bytes:
+                    break
+            return sequence, total_pcm_bytes
+
+        reader_task = asyncio.create_task(forward_pcm())
+        async def write_piece(piece: bytes) -> None:
+            if not piece:
+                return
+            if len(piece) % 2:
+                raise RuntimeError("GPT Audio Mini split a PCM16 sample")
+            if reader_task is not None and reader_task.done():
+                await reader_task
+            assert process is not None and process.stdin is not None
+            process.stdin.write(piece)
+            await process.stdin.drain()
+
+        await write_piece(first_piece)
+        async for piece in iterator:
+            await write_piece(piece)
+        assert process.stdin is not None
+        process.stdin.close()
+        await process.stdin.wait_closed()
+        sequence, total_pcm_bytes = await reader_task
+        return_code = await process.wait()
+        if return_code != 0:
+            raise RuntimeError(f"FFmpeg PCM resampling exited with status {return_code}")
+        if sequence == 0:
+            raise RuntimeError("GPT Audio Mini audio resampled to an empty device stream")
+        await _send_locked(
+            websocket,
+            send_lock,
+            {
+                "type": "tts_chunk_end",
+                "version": 1,
+                "turn_id": turn_id,
+                "chunk_id": chunk_id,
+                "trace_id": trace_id,
+                "frame_count": sequence,
+                "pcm_bytes": total_pcm_bytes,
+            },
+        )
+        mark_voice_stage(
+            "audio_conversion_complete",
+            duration_seconds=perf_counter() - started,
+            provider="ffmpeg_pcm_resample",
+            chunk=chunk_id,
+            bytes=total_pcm_bytes,
+        )
+        return total_pcm_bytes
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        try:
+            await _send_locked(
+                websocket,
+                send_lock,
+                {
+                    "type": "tts_chunk_abort",
+                    "version": 1,
+                    "turn_id": turn_id,
+                    "chunk_id": chunk_id,
+                    "trace_id": trace_id,
+                },
+            )
+        except Exception:
+            pass
+        raise
+    finally:
+        if reader_task is not None and not reader_task.done():
+            reader_task.cancel()
+            await asyncio.gather(reader_task, return_exceptions=True)
+        if process is not None and process.returncode is None:
+            if process.stdin is not None:
+                process.stdin.close()
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=1.0)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+
+
 async def _send_locked(
     websocket: WebSocket, send_lock: Lock, payload: dict[str, object] | bytes
 ) -> None:
