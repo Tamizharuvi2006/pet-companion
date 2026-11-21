@@ -92,6 +92,7 @@ def test_diagnostic_settings_fail_closed_on_missing_key_or_model_change() -> Non
             voice_diagnostic_mode=True,
             openrouter_api_key="test-only",
             whisper_interim_enabled=False,
+            tts_race_enabled=True,
         ).validate_voice_diagnostic()
 
     with pytest.raises(RuntimeError, match="MODEL_NAME"):

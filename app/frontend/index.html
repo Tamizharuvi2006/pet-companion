@@ -4,12 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Bella AI</title>
-    <link rel="stylesheet" href="/style.css?v=phase1e" />
+    <link rel="stylesheet" href="/style.css?v=audio-mini-ab" />
   </head>
   <body>
     <section id="auth-gate" class="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
       <form id="auth-form" class="auth-card">
-        <div class="avatar" aria-hidden="true">B</div>
         <p class="side-kicker">PRIVATE COMPANION</p>
         <h2 id="auth-title">Welcome back.</h2>
         <p class="side-copy">Enter your Bella access password to continue.</p>
@@ -22,48 +21,40 @@
     <div class="ambient ambient-one"></div>
     <div class="ambient ambient-two"></div>
     <div class="workspace">
-      <div class="side-stack">
-        <aside class="side-panel side-left" aria-label="Bella capabilities">
-          <p class="side-kicker">BELLA</p>
-          <h2>Always nearby.</h2>
-          <p class="side-copy">A calm little companion for quick thoughts, voice notes, and late-night ideas.</p>
-          <div class="side-item"><span></span> Voice ready</div>
-          <div class="side-item"><span></span> Memory on</div>
-        </aside>
-        <figure class="pet-art pet-cat">
-          <span class="pet-halo" aria-hidden="true"></span>
-          <span class="spark spark-one" aria-hidden="true">✦</span>
-          <span class="spark spark-two" aria-hidden="true">·</span>
-          <img src="/assets/bella-cat-transparent.png" alt="Bella's anime cat companion" />
-        </figure>
-      </div>
+      <button id="history-backdrop" class="history-backdrop" type="button" aria-label="Close chat history" hidden></button>
+      <aside id="history-drawer" class="history-drawer" aria-label="Chat history" hidden>
+        <div class="history-heading"><strong>Bella</strong><button id="close-history" type="button" aria-label="Close chat history">◫</button></div>
+        <button id="new-chat" type="button">＋ New chat</button>
+        <input id="history-search" type="search" aria-label="Search chats" placeholder="Search chats" />
+        <h2 class="history-section-label">Recents</h2>
+        <div id="history-list"></div>
+        <small>Saved in this browser.</small>
+      </aside>
     <main class="app-shell">
       <header class="topbar">
         <div class="brand">
-          <div class="avatar" aria-hidden="true">B</div>
+          <button id="toggle-history" class="history-toggle" type="button" aria-expanded="false" aria-controls="history-drawer" aria-label="Open chat history">☰</button>
           <div>
-            <p class="eyebrow">YOUR CLOUD COMPANION</p>
-            <h1>Bella<span>.</span></h1>
+            <h1>Bella</h1>
           </div>
         </div>
         <div class="topbar-actions">
+          <a class="face-link" href="/face.html">Face Studio <span aria-hidden="true">↗</span></a>
           <button id="logout" class="logout" type="button" hidden>Sign out</button>
           <div id="status" class="status" aria-live="polite"><i></i> Connecting…</div>
         </div>
       </header>
-      <div class="mobile-pets" aria-label="Bella's little companions">
-        <button class="mobile-pet mobile-pet-cat" type="button" data-pet-sound aria-label="Pet the Bella cat">
+      <div id="conversation-scroll" class="conversation-scroll" tabindex="0" aria-label="Scroll conversation">
+      <section id="chat" class="chat" aria-label="Conversation history">
+      <div class="mobile-pets chat-pet" aria-label="Bella's companion">
+        <button class="mobile-pet mobile-pet-cat" type="button" data-pet-sound aria-label="Pet Bella's companion">
           <img src="/assets/bella-cat-transparent.png" alt="" />
-        </button>
-        <button class="mobile-pet mobile-pet-fox" type="button" data-pet-sound aria-label="Pet the sleepy Bella fox">
-          <img src="/assets/bella-fox-transparent.png" alt="" />
         </button>
         <div id="pet-speech" class="pet-speech" role="status" aria-live="polite" hidden></div>
       </div>
-      <section id="chat" class="chat" aria-label="Conversation history" tabindex="0">
         <div class="welcome">
-          <div class="welcome-mark">✦</div>
-          <p>Hey, I’m Bella. I’m glad you’re here — what’s on your mind?</p>
+          <h2>What’s on your mind?</h2>
+          <p>Start with a message, or hold the mic to talk.</p>
           <div class="quick-prompts" aria-label="Conversation starters">
             <button type="button" data-prompt="I want to talk about my day.">Talk about my day</button>
             <button type="button" data-prompt="Help me think through an idea.">Think through an idea</button>
@@ -71,34 +62,40 @@
           </div>
         </div>
       </section>
+      </div>
+      <button id="jump-latest" type="button" hidden>↓ Jump to latest</button>
+      <div class="composer">
       <form id="text-form" class="text-form">
-        <input id="text-input" aria-label="Message Bella" autocomplete="off" placeholder="Message Bella…" />
-        <button type="submit" aria-label="Send message">Send <span>↗</span></button>
+        <textarea id="text-input" aria-label="Message Bella" rows="1" placeholder="Message Bella…"></textarea>
+        <button type="submit" aria-label="Send message" title="Send message"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button>
       </form>
       <section class="controls" aria-label="Voice controls">
-        <button id="start" class="secondary" aria-label="Connect Bella">Connect</button>
-        <button id="push-to-talk" class="talk" disabled aria-label="Hold to talk"><span class="mic">●</span> Hold to talk</button>
+        <button id="start" class="secondary" aria-label="Connect Bella">Reconnect</button>
+        <button id="voice-mode" class="secondary" type="button">Voice mode</button>
+        <label class="voice-engine-picker" for="voice-engine">Voice engine
+          <select id="voice-engine" aria-label="Choose voice engine">
+            <option value="gpt_audio_mini" selected>GPT Audio Mini</option>
+            <option value="current">Current Bella · Whisper + GPT-4o Mini + Kokoro</option>
+          </select>
+        </label>
+        <button id="push-to-talk" class="talk" disabled aria-label="Hold to talk"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3"/></svg><span>Hold to talk</span></button>
         <button id="stop" class="secondary stop" disabled>Stop</button>
       </section>
+      </div>
       <button id="play-audio" class="audio-resume" hidden>▶ Play Bella’s reply</button>
       <button id="retry-audio" class="audio-resume" hidden>↻ Retry Bella’s voice</button>
       <audio id="player"></audio>
+      <section id="voice-session" class="voice-session" aria-label="Hands-free voice conversation" hidden>
+        <div class="voice-orb" aria-hidden="true"></div>
+        <h2>Bella voice</h2>
+        <p id="voice-session-status" role="status">Listening…</p>
+        <p class="voice-session-hint">Speak, then pause. Listening resumes after Bella finishes.<br>Long turns are submitted automatically; the session stays open.<br>Microphone pauses during replies to avoid recording the speaker.</p>
+        <button id="end-voice-mode" type="button">End voice mode</button>
+      </section>
     </main>
-      <div class="side-stack">
-        <aside class="side-panel side-right" aria-label="Bella session details">
-          <p class="side-kicker">HOW IT FEELS</p>
-          <div class="feature"><b>Listen</b><span>Speak naturally</span></div>
-          <div class="feature"><b>Think</b><span>Replies stream live</span></div>
-          <div class="feature"><b>Speak</b><span>Audio follows along</span></div>
-        </aside>
-        <figure class="pet-art pet-fox">
-          <span class="pet-halo" aria-hidden="true"></span>
-          <span class="spark spark-one" aria-hidden="true">✦</span>
-          <span class="spark spark-two" aria-hidden="true">✧</span>
-          <img src="/assets/bella-fox-transparent.png" alt="Bella's sleeping fox companion" />
-        </figure>
-      </div>
     </div>
-    <script src="/app.js?v=phase1e"></script>
+    <script src="/expression-controller.js"></script>
+    <script src="/voice-endpoint.js"></script>
+    <script src="/app.js?v=audio-mini-ab"></script>
   </body>
 </html>

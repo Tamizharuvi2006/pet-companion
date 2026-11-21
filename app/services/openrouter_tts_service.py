@@ -2,7 +2,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from time import perf_counter
 
 import aiofiles
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class OpenRouterTTSService:
-    """Kokoro speech with Edge TTS as a reliable no-config fallback."""
+    """OpenRouter Kokoro speech without automatic provider substitution."""
 
     def __init__(
         self,
@@ -44,6 +44,7 @@ class OpenRouterTTSService:
             },
         )
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
+        self._edge_retry_after = 0.0
 
     async def load(self) -> None:
         """Kokoro is remote, so no startup model load is required."""
@@ -59,44 +60,17 @@ class OpenRouterTTSService:
         diagnostic_mode = getattr(self._settings, "voice_test_enabled", False)
         if diagnostic_mode and len(text) > BOUNDED_FULL_TTS_MAX_INPUT_CHARS:
             raise ValueError("Voice test TTS input exceeds the local safety limit")
-        if diagnostic_mode:
-            if (
-                (voice is not None and voice != self._settings.openrouter_tts_voice)
-                or rate is not None
-                or pitch is not None
-                or not self._settings.openrouter_tts_enabled
-                or not self._settings.openrouter_api_key
-            ):
-                raise RuntimeError("Voice test mode requires Kokoro; Edge fallback is disabled")
-            return await self._synthesize_with_kokoro(
-                text, voice or self._settings.openrouter_tts_voice
-            )
-        # Keep named Edge voices/rate/pitch controls as a fallback-only feature.
-        # Bella's normal and cute modes use Kokoro's two configured English voices.
         kokoro_voices = {
             self._settings.openrouter_tts_voice,
             self._settings.openrouter_tts_cute_voice,
         }
-        if voice is not None and voice not in kokoro_voices:
-            return await self._fallback.synthesize(text, voice=voice, rate=rate, pitch=pitch)
-        if rate is not None or pitch is not None:
-            return await self._fallback.synthesize(text, voice=voice, rate=rate, pitch=pitch)
-        if not self._settings.openrouter_tts_enabled or not self._settings.openrouter_api_key:
-            logger.info("Kokoro TTS unavailable; using Edge TTS fallback")
-            return await self._fallback.synthesize(text)
-
-        started = perf_counter()
-        try:
-            if self._settings.tts_race_enabled:
-                return await self._synthesize_with_race(
-                    text, voice or self._settings.openrouter_tts_voice, started
-                )
-            audio_url = await self._synthesize_with_kokoro(text, voice or self._settings.openrouter_tts_voice)
-            logger.info("Kokoro TTS time: %.2fs", perf_counter() - started)
-            return audio_url
-        except (httpx.HTTPError, RuntimeError, ValueError) as error:
-            logger.warning("Kokoro TTS failed; using Edge TTS fallback: %s", error)
-            return await self._fallback.synthesize(text)
+        if diagnostic_mode and (voice not in (None, self._settings.openrouter_tts_voice) or rate is not None or pitch is not None):
+            raise RuntimeError("Voice test mode requires Kokoro; Edge fallback is disabled")
+        if ((voice is not None and voice not in kokoro_voices)
+            or rate is not None or pitch is not None
+            or not self._settings.openrouter_tts_enabled or not self._settings.openrouter_api_key):
+            raise RuntimeError("Kokoro speech is unavailable or the requested voice controls are unsupported")
+        return await self._synthesize_with_kokoro(text, voice or self._settings.openrouter_tts_voice)
 
     async def stream_audio(
         self,
@@ -114,13 +88,7 @@ class OpenRouterTTSService:
             self._settings.openrouter_tts_voice,
             self._settings.openrouter_tts_cute_voice,
         }
-        if diagnostic_mode and (
-            (voice is not None and voice != self._settings.openrouter_tts_voice)
-            or rate is not None
-            or pitch is not None
-            or not self._settings.openrouter_tts_enabled
-            or not self._settings.openrouter_api_key
-        ):
+        if diagnostic_mode and (voice not in (None, self._settings.openrouter_tts_voice) or rate is not None or pitch is not None):
             raise RuntimeError("Voice test mode requires Kokoro; Edge fallback is disabled")
         if (
             (voice is not None and voice not in kokoro_voices)
@@ -129,35 +97,20 @@ class OpenRouterTTSService:
             or not self._settings.openrouter_tts_enabled
             or not self._settings.openrouter_api_key
         ):
-            async for chunk in self._validated_edge_stream(
-                text, voice=voice, rate=rate, pitch=pitch
-            ):
-                yield chunk
-            return
-
+            raise RuntimeError("Kokoro speech is unavailable or the requested voice controls are unsupported")
         selected_voice = voice or self._settings.openrouter_tts_voice
-        if self._settings.tts_race_enabled and not diagnostic_mode:
-            async for chunk in self._stream_race(text, selected_voice):
-                yield chunk
-            return
 
         kokoro = self._stream_kokoro(text, selected_voice)
         try:
-            first_chunk = await first_valid_mp3_prefix(kokoro)
+            first_chunk = await self._first_kokoro_prefix(kokoro)
         except asyncio.CancelledError:
             await kokoro.aclose()
             raise
-        except (StopAsyncIteration, httpx.HTTPError, RuntimeError, ValueError) as error:
+        except (StopAsyncIteration, httpx.HTTPError, RuntimeError, ValueError, TimeoutError) as error:
             await kokoro.aclose()
             if diagnostic_mode:
                 raise RuntimeError("Diagnostic Kokoro stream failed; Edge fallback is disabled") from error
-            logger.warning(
-                "Kokoro stream failed before audio; using Edge fallback (%s)",
-                type(error).__name__,
-            )
-            async for chunk in self._validated_edge_stream(text):
-                yield chunk
-            return
+            raise RuntimeError("Kokoro speech failed; no backup provider is enabled") from error
         mark_voice_stage(
             "tts_provider_first_audio_selected",
             provider="kokoro",
@@ -169,12 +122,17 @@ class OpenRouterTTSService:
             bytes=len(first_chunk),
             minimum_frames=2,
         )
-        yield TTSAudioChunk(provider="kokoro", data=first_chunk)
         try:
+            yield TTSAudioChunk(provider="kokoro", data=first_chunk)
             async for data in kokoro:
                 yield TTSAudioChunk(provider="kokoro", data=data)
         finally:
             await kokoro.aclose()
+
+    async def _first_kokoro_prefix(self, stream: AsyncIterator[bytes]) -> bytes:
+        # Without a fallback, an aggressive race deadline only cuts off valid
+        # slow responses. Keep the configured HTTP timeout as the failure bound.
+        return await first_valid_mp3_prefix(stream)
 
     async def _stream_race(
         self, text: str, voice: str
@@ -186,7 +144,10 @@ class OpenRouterTTSService:
             "edge": self._stream_edge_bytes(text),
         }
         pending: dict[asyncio.Task[bytes], tuple[str, AsyncIterator[bytes]]] = {
-            asyncio.create_task(first_valid_mp3_prefix(stream)): (provider, stream)
+            asyncio.create_task(
+                self._first_kokoro_prefix(stream)
+                if provider == "kokoro" else first_valid_mp3_prefix(stream)
+            ): (provider, stream)
             for provider, stream in streams.items()
         }
         winner: str | None = None
@@ -209,6 +170,8 @@ class OpenRouterTTSService:
                     except asyncio.CancelledError:
                         raise
                     except Exception as error:
+                        if provider == "edge":
+                            self._edge_retry_after = perf_counter() + 60.0
                         failures.append(f"{provider}:{type(error).__name__}")
                         await stream.aclose()
                         continue
@@ -240,12 +203,9 @@ class OpenRouterTTSService:
                 raise RuntimeError("Both streaming TTS providers failed: " + ", ".join(failures))
 
             total_bytes = len(data)
-            try:
-                async for data in winner_stream:
-                    total_bytes += len(data)
-                    yield TTSAudioChunk(provider=winner, data=data)
-            finally:
-                await winner_stream.aclose()
+            async for data in winner_stream:
+                total_bytes += len(data)
+                yield TTSAudioChunk(provider=winner, data=data)
             mark_voice_stage(
                 "tts_winner_stream_complete",
                 duration_seconds=perf_counter() - started,
@@ -253,8 +213,10 @@ class OpenRouterTTSService:
                 bytes=total_bytes,
             )
         finally:
+            if winner_stream is not None:
+                await winner_stream.aclose()
             if pending:
-                await self._cancel_and_cleanup(pending)
+                await self._cleanup_streams(tuple(pending.items()))
 
     async def _stream_kokoro(self, text: str, voice: str) -> AsyncIterator[bytes]:
         started = perf_counter()
@@ -301,8 +263,9 @@ class OpenRouterTTSService:
         )
 
     async def _stream_edge_bytes(self, text: str) -> AsyncIterator[bytes]:
-        async for chunk in self._fallback.stream_audio(text):
-            yield chunk.data
+        async with aclosing(self._fallback.stream_audio(text)) as stream:
+            async for chunk in stream:
+                yield chunk.data
 
     async def _validated_edge_stream(
         self,

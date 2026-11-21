@@ -1,6 +1,8 @@
+import ipaddress
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
@@ -33,6 +35,11 @@ class Settings(BaseModel):
     max_ws_recording_bytes: int = Field(default=8 * 1024 * 1024, ge=65_536, le=100 * 1024 * 1024)
     max_ws_recording_seconds: int = Field(default=30, ge=1, le=300)
     model_name: str = "openai/gpt-4o-mini"
+    voice_audio_input_enabled: bool = False
+    voice_engine_default: Literal["current", "gpt_audio_mini"] = "gpt_audio_mini"
+    voice_audio_model: str = "openai/gpt-audio-mini"
+    voice_audio_voice: str = "shimmer"
+    voice_audio_max_tokens: int = Field(default=512, ge=64, le=4096)
     max_tokens: int = 80
     whisper_model: str = "base"
     whisper_preload_enabled: bool = True
@@ -52,8 +59,8 @@ class Settings(BaseModel):
     openrouter_timeout_seconds: float = 60.0
     openrouter_tts_timeout_seconds: float = 8.0
     tts_provider: str = "kokoro"
-    tts_race_enabled: bool = True
-    tts_first_chunk_words: int = Field(default=6, ge=4, le=8)
+    tts_race_enabled: bool = False
+    tts_first_chunk_words: int = Field(default=5, ge=4, le=8)
     voice_diagnostic_mode: bool = False
     bounded_full_voice_test: bool = False
     tts_voice: str = "en-US-AnaNeural"
@@ -82,6 +89,39 @@ class Settings(BaseModel):
         return self.environment.strip().lower() not in {"development", "dev", "local", "test"}
 
     @property
+    def camera_transport_ready(self) -> bool:
+        """A public deployment must never send the camera bearer token over plain HTTP."""
+        if not self.camera_enabled or not self.camera_base_url or not self.camera_token:
+            return False
+        try:
+            parsed = urlsplit(self.camera_base_url)
+            # Accessing .port also validates malformed port strings.
+            _ = parsed.port
+        except ValueError:
+            return False
+        if (
+            not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or len(self.camera_token) < 16
+        ):
+            return False
+        if parsed.scheme.lower() == "https":
+            return True
+        if self.public_mode or parsed.scheme.lower() != "http":
+            return False
+        host = parsed.hostname.lower().rstrip(".")
+        if host == "localhost" or host.endswith((".local", ".lan", ".home.arpa")):
+            return True
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return address.is_private or address.is_loopback or address.is_link_local
+
+    @property
     def voice_test_enabled(self) -> bool:
         return self.voice_diagnostic_mode or self.bounded_full_voice_test
 
@@ -94,6 +134,10 @@ class Settings(BaseModel):
         return "disabled"
 
     def validate_public_security(self) -> None:
+        if self.camera_enabled and not self.camera_transport_ready:
+            raise RuntimeError(
+                "Enabled camera requires a valid base URL and 16+ character token; public mode requires HTTPS."
+            )
         if not self.public_mode:
             return
         if not self.browser_access_password or len(self.browser_access_password) < 16:
@@ -190,6 +234,11 @@ def get_settings() -> Settings:
         max_ws_recording_bytes=int(os.getenv("MAX_WS_RECORDING_BYTES", str(8 * 1024 * 1024))),
         max_ws_recording_seconds=int(os.getenv("MAX_WS_RECORDING_SECONDS", "30")),
         model_name=os.getenv("MODEL_NAME", "openai/gpt-4o-mini"),
+        voice_audio_input_enabled=os.getenv("VOICE_AUDIO_INPUT_ENABLED", "false").lower() in {'1', 'true', 'yes'},
+        voice_engine_default=os.getenv("VOICE_ENGINE_DEFAULT", "gpt_audio_mini").strip().lower(),
+        voice_audio_model=os.getenv("VOICE_AUDIO_MODEL", "openai/gpt-audio-mini"),
+        voice_audio_voice=os.getenv("VOICE_AUDIO_VOICE", "shimmer"),
+        voice_audio_max_tokens=int(os.getenv("VOICE_AUDIO_MAX_TOKENS", "512")),
         max_tokens=int(os.getenv("MAX_TOKENS", "80")),
         whisper_model=os.getenv("WHISPER_MODEL", "base"),
         whisper_preload_enabled=os.getenv("WHISPER_PRELOAD_ENABLED", "true").lower() in {'1', 'true', 'yes', 'on'},
@@ -218,9 +267,9 @@ def get_settings() -> Settings:
             os.getenv("OPENROUTER_TTS_TIMEOUT_SECONDS", "8")
         ),
         tts_provider=os.getenv("TTS_PROVIDER", "kokoro").lower(),
-        tts_race_enabled=os.getenv("TTS_RACE_ENABLED", "true").lower()
+        tts_race_enabled=os.getenv("TTS_RACE_ENABLED", "false").lower()
         in {"1", "true", "yes", "on"},
-        tts_first_chunk_words=int(os.getenv("TTS_FIRST_CHUNK_WORDS", "6")),
+        tts_first_chunk_words=int(os.getenv("TTS_FIRST_CHUNK_WORDS", "5")),
         voice_diagnostic_mode=os.getenv("VOICE_DIAGNOSTIC_MODE", "false").lower()
         in {"1", "true", "yes", "on"},
         bounded_full_voice_test=os.getenv("BOUNDED_FULL_VOICE_TEST", "false").lower()

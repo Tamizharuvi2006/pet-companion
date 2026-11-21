@@ -31,6 +31,27 @@ def test_public_mode_rejects_non_https_or_non_origin_allowlist_entries() -> None
             _public_settings().model_copy(update={"browser_allowed_origins": (origin,)}).validate_public_security()
 
 
+def test_public_camera_requires_https_and_private_development_camera_can_use_http() -> None:
+    http_camera = {
+        "camera_enabled": True,
+        "camera_base_url": "http://camera.example",
+        "camera_token": "camera-token-123456",
+    }
+    with pytest.raises(RuntimeError, match="public mode requires HTTPS"):
+        _public_settings().model_copy(update=http_camera).validate_public_security()
+
+    secure = _public_settings().model_copy(
+        update={**http_camera, "camera_base_url": "https://camera.example"}
+    )
+    secure.validate_public_security()
+    assert secure.camera_transport_ready
+
+    local = Settings(**{**http_camera, "environment": "development"})
+    local.camera_base_url = "http://camera.local"
+    assert local.camera_transport_ready
+    assert not Settings(**{**http_camera, "environment": "development"}).camera_transport_ready
+
+
 def test_signed_session_token_detects_tampering_and_expiry() -> None:
     settings = _public_settings()
     token, session_id, _ = issue_session(settings)

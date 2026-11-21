@@ -45,7 +45,7 @@ def test_stream_race_returns_first_provider_bytes_and_cleans_loser() -> None:
                 loser_cancelled.set()
 
         service._stream_kokoro = slow_kokoro  # type: ignore[method-assign]
-        stream = service.stream_audio("hello")
+        stream = service._stream_race("hello", "af_bella")
         first = await asyncio.wait_for(anext(stream), timeout=0.5)
         assert first.provider == "edge"
         assert has_complete_mp3_frames(first.data)
@@ -82,7 +82,7 @@ def test_race_skips_fast_invalid_stream_and_selects_valid_provider() -> None:
             yield b"not an MP3 frame"
 
         service._stream_kokoro = invalid_fast  # type: ignore[method-assign]
-        pieces = [chunk async for chunk in service.stream_audio("hello")]
+        pieces = [chunk async for chunk in service._stream_race("hello", "af_bella")]
         assert pieces
         assert pieces[0].provider == "edge"
         assert has_complete_mp3_frames(pieces[0].data)

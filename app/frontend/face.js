@@ -3,6 +3,9 @@
 const states=['IDLE','HAPPY','EXCITED','LOVE','CURIOUS','SURPRISED','SAD','ANGRY','SLEEPY','WINK','LISTENING','THINKING','SPEAKING','OFFLINE','ERROR'];
 const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d');
 const reduced=document.querySelector('#reduced');
+const simulationController=new BellaExpressionController();let simulationSequence=0;
+function simulate(expression,source,duration=3000){simulationController.apply({version:1,event_id:'simulation:'+ ++simulationSequence,session_id:'simulation',device_id:null,turn_id:null,destination:'simulation',source,sequence:simulationSequence,expression:expression.toLowerCase(),duration_ms:duration});}
+function clearSimulationActivity(){for(const source of ['conversation','playback','connectivity','error'])simulate('idle',source);}
 reduced.checked=matchMedia('(prefers-reduced-motion: reduce)').matches;
 let status='IDLE',emotion='IDLE',until=0,lastTouch=-1000,time=0,last=performance.now(),blinkAt=2800;
 const eyes=[{w:136,h:155,curve:0,angle:0,y:0},{w:136,h:155,curve:0,angle:0,y:0}];
@@ -27,15 +30,15 @@ const smoothstep=(a,b,v)=>{const t=Math.max(0,Math.min(1,(v-a)/(b-a)));return t*
 canvas.addEventListener('pointermove',event=>{const box=canvas.getBoundingClientRect();pointerX=((event.clientX-box.left)/box.width-.5)*30;pointerY=((event.clientY-box.top)/box.height-.5)*20;pointerUntil=time+1600;});
 canvas.addEventListener('pointerleave',()=>{pointerUntil=0;});
 function buttons(id,items,fn){items.forEach((name,i)=>{const b=document.createElement('button');b.textContent=name;b.dataset.state=name;b.onclick=()=>fn(name,i);document.querySelector(id).append(b);});}
-buttons('#emotions',states.slice(0,10),name=>{status='IDLE';emotion=name;until=time+3000;});
-buttons('#pads',['1 · Happy','2 · Love','3 · Curious','4 · Wink'],(_,i)=>{if(time-lastTouch<250)return;lastTouch=time;emotion=['HAPPY','LOVE','CURIOUS','WINK'][i];until=time+1800;});
-buttons('#voice',['IDLE','LISTENING','THINKING','SPEAKING','OFFLINE','ERROR'],name=>status=name);
+buttons('#emotions',states.slice(0,10),name=>{clearSimulationActivity();simulate(name,'preview');});
+buttons('#pads',['1 · Happy','2 · Love','3 · Curious','4 · Wink'],(_,i)=>{if(time-lastTouch<250)return;lastTouch=time;simulate(['HAPPY','LOVE','CURIOUS','WINK'][i],'touch',1800);});
+buttons('#voice',['IDLE','LISTENING','THINKING','SPEAKING','OFFLINE','ERROR'],name=>{clearSimulationActivity();simulate(name,name==='ERROR'?'error':name==='OFFLINE'?'connectivity':name==='SPEAKING'?'playback':'conversation',name==='ERROR'?2200:60000);});
 function target(state,i){
  const t={w:136,h:155,curve:0,angle:0,y:0};
  switch(state){
  case 'HAPPY':Object.assign(t,{w:148,h:12,curve:-52,y:14});break;
  case 'EXCITED':Object.assign(t,{w:152,h:178,y:-8});break;
- case 'LOVE':Object.assign(t,{w:145,h:16,curve:-33,y:12});break;
+ case 'LOVE':Object.assign(t,{w:145,h:166,y:-3});break;
  case 'CURIOUS':Object.assign(t,{w:i?130:145,h:i?110:178,y:i?9:-13,angle:i?.055:-.055});break;
  case 'SURPRISED':Object.assign(t,{w:154,h:195,y:-10});break;
  case 'SAD':Object.assign(t,{w:140,h:96,angle:i?.16:-.16,y:15});break;
@@ -53,8 +56,8 @@ function target(state,i){
 function frame(now){
  const dt=Math.min((now-last)/1000,.05);last=now;
  time+=dt*1000*Number(document.querySelector('#speed').value);
- const remote=window.bellaFaceConnected?window.bellaFaceRemoteExpression:null;
- const s=remote&&states.includes(remote)?remote:status!=='IDLE'?status:time<until?emotion:'IDLE';
+ const remote=window.bellaFaceBrowserVoice?window.BellaExpressions.controller.current().toUpperCase():window.bellaFaceConnected?window.bellaFaceRemoteExpression:null;
+ const s=remote&&states.includes(remote)?remote:simulationController.current().toUpperCase();
  document.querySelector('#state').textContent=s;
  document.querySelectorAll('[data-state]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.state===s)));
  if(time>blinkAt+220)blinkAt=time+2400+Math.random()*3200;
@@ -75,7 +78,7 @@ function frame(now){
  thinkingBlend+=((s==='THINKING'?1:0)-thinkingBlend)*a;
  gaze+=((s==='THINKING'?24+(reduced.checked?0:Math.sin(time/1100)*9):s==='CURIOUS'?13:0)-gaze)*a;
  ctx.clearRect(0,0,1000,500);
- const color=s==='LOVE'?'#efbad4':s==='ERROR'?'#ffc8a2':s==='OFFLINE'?'#85929a':'#b9f3df';
+ const color=s==='LOVE'?'#f5a9df':s==='ERROR'?'#ff829c':s==='OFFLINE'?'#8fbaff':'#c5a2ff';
  ctx.fillStyle=color;ctx.strokeStyle=color;ctx.lineCap='round';
  eyes.forEach((eye,i)=>{
   const t=target(s,i);for(const key of Object.keys(t))eye[key]+=(t[key]-eye[key])*a;
@@ -112,9 +115,9 @@ function frame(now){
    ctx.save();ctx.beginPath();ctx.ellipse(ix,iy,r,h*.58,0,0,Math.PI*2);ctx.clip();
    // 3. Layered iris pigment, darker under the lid and luminous below.
    const iris=ctx.createLinearGradient(0,-h*.5,0,h*.5);
-   iris.addColorStop(0,pigment([41,32,70],[65,28,65],interior.warm));
-   iris.addColorStop(.35,pigment([114,83,175],[166,80,163],interior.warm));
-   iris.addColorStop(.72,pigment([186,148,236],[236,155,202],interior.warm));iris.addColorStop(1,'#f4d5f5');
+   iris.addColorStop(0,pigment([27,17,75],[78,19,80],interior.warm));
+   iris.addColorStop(.35,pigment([70,44,161],[167,63,169],interior.warm));
+   iris.addColorStop(.72,pigment([83,125,244],[240,138,208],interior.warm));iris.addColorStop(1,pigment([166,245,255],[255,209,239],interior.warm));
    ctx.fillStyle=iris;ctx.beginPath();ctx.ellipse(ix,iy,r,h*.58,0,0,Math.PI*2);ctx.fill();
    const depth=ctx.createRadialGradient(ix,iy,r*.2,ix,iy,r);
    depth.addColorStop(0,'#f4b9ef80');depth.addColorStop(.6,'#ad87df00');depth.addColorStop(.86,'#44356070');depth.addColorStop(1,'#231b3bd9');
@@ -136,7 +139,7 @@ function frame(now){
    ctx.fillStyle='#161024';ctx.beginPath();ctx.ellipse(ix,iy-h*.06,r*.35*dilation,h*.3*dilation,0,0,Math.PI*2);ctx.fill();
    // 6. Lower bounced light and the upper eyelid's cast shadow.
    const reflected=ctx.createRadialGradient(ix,iy+h*.36,1,ix,iy+h*.36,r*.8);
-   reflected.addColorStop(0,'#ffd9f296');reflected.addColorStop(1,'#e6c3ff00');ctx.fillStyle=reflected;ctx.fillRect(ix-r,iy-h,r*2,h*2);
+   reflected.addColorStop(0,'#b9faffd0');reflected.addColorStop(1,'#9acaff00');ctx.fillStyle=reflected;ctx.fillRect(ix-r,iy-h,r*2,h*2);
    const lidShadow=ctx.createLinearGradient(0,-h*.6,0,h*.1);
    lidShadow.addColorStop(0,'#171027b8');lidShadow.addColorStop(1,'#17102700');ctx.fillStyle=lidShadow;ctx.fillRect(ix-r,iy-h,r*2,h*2);
    // 7. Corneal reflections: broad soft light plus crisp catchlights.
@@ -157,6 +160,14 @@ function frame(now){
    // Emotional exposure changes smoothly, without replacing the iris texture.
    ctx.fillStyle=interior.light<1?`rgba(20,15,35,${(1-interior.light)*.65})`:`rgba(255,229,250,${(interior.light-1)*.3})`;
    ctx.fillRect(ix-r,iy-h,r*2,h*2);
+   // Reference-inspired emotional pupils stay attached to the moving iris.
+   if(interior.warm>.65&&s==='LOVE'){
+    ctx.save();ctx.globalAlpha*=(interior.warm-.65)/.35;ctx.fillStyle='#ffa9e2';
+    ctx.beginPath();ctx.moveTo(ix,iy+23);ctx.bezierCurveTo(ix-39,iy-3,ix-23,iy-30,ix,iy-12);ctx.bezierCurveTo(ix+23,iy-30,ix+39,iy-3,ix,iy+23);ctx.fill();ctx.restore();
+   }
+   if(s==='EXCITED'){
+    ctx.fillStyle='#fff4ac';ctx.beginPath();ctx.moveTo(ix,iy-27);ctx.quadraticCurveTo(ix+5,iy-5,ix+22,iy);ctx.quadraticCurveTo(ix+5,iy+5,ix,iy+27);ctx.quadraticCurveTo(ix-5,iy+5,ix-22,iy);ctx.quadraticCurveTo(ix-5,iy-5,ix,iy-27);ctx.fill();
+   }
    ctx.restore();
    ctx.restore();
    if(errorBlend>.001){
@@ -175,10 +186,13 @@ function frame(now){
   ctx.fillStyle=bloom;ctx.fillRect(-w,-h,w*2,h*2);
   ctx.restore();
   if(detail>.001){
-   ctx.globalAlpha*=detail;ctx.shadowBlur=0;ctx.strokeStyle='#a28ab9';ctx.lineWidth=7;
+   ctx.globalAlpha*=detail;ctx.shadowBlur=0;ctx.strokeStyle='#21132f';ctx.lineWidth=10;
    ctx.beginPath();ctx.moveTo(-w*.57,0);ctx.bezierCurveTo(-w*.48,-h*.73-c,w*.36,-h*.77-c,w*.57,0);ctx.stroke();
    const side=i===0?-1:1;ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(side*w*.48,-h*.24);ctx.lineTo(side*w*.66,-h*.39);ctx.moveTo(side*w*.38,-h*.4);ctx.lineTo(side*w*.49,-h*.57);ctx.stroke();
+   ctx.strokeStyle='#d7adeb';ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(-w*.43,-h*.49);ctx.bezierCurveTo(-w*.19,-h*.75,w*.16,-h*.72,w*.35,-h*.53);ctx.stroke();
   }
+  // Fine floating brows keep the silhouette readable at small display sizes.
+  ctx.strokeStyle=color;ctx.lineWidth=2;ctx.globalAlpha=.8;ctx.beginPath();ctx.moveTo(-w*.33,-eye.h*.72-20);ctx.quadraticCurveTo(0,-eye.h*.86-25,w*.3,-eye.h*.73-20);ctx.stroke();
   ctx.restore();
  });
  if(thinkingBlend>.001){ctx.save();ctx.fillStyle=color;for(let i=0;i<3;i++){const pulse=reduced.checked?.65:.35+.65*(.5+.5*Math.sin(time/330-i*.9));ctx.globalAlpha=thinkingBlend*pulse;ctx.beginPath();ctx.arc(464+i*36,133,4+i,0,Math.PI*2);ctx.fill();}ctx.restore();}

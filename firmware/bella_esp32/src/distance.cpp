@@ -12,34 +12,52 @@ extern "C" {
 #include "vl53l0x.h"
 }
 
+#include <atomic>
+
 static const char *TAG = "bella_distance";
 static i2c_master_bus_handle_t g_i2c_bus = nullptr;
 static vl53l0x_handle_t g_sensor = nullptr;
-static bool g_present = false;
+static std::atomic<bool> g_initialized{false}, g_has_valid_sample{false}, g_present{false};
+static std::atomic<uint16_t> g_last_mm{0};
+static std::atomic<uint32_t> g_invalid_count{0}, g_valid_count{0};
 static uint8_t g_candidate_count = 0;
 
 static void distance_task(void *) {
     uint32_t last_report_ms = 0;
     while (true) {
         bool ready = false;
-        if (vl53l0x_get_ready(g_sensor, &ready) == ESP_OK && ready) {
+        const esp_err_t ready_result = vl53l0x_get_ready(g_sensor, &ready);
+        if (ready_result != ESP_OK) {
+            g_invalid_count.fetch_add(1);
+        } else if (ready) {
             vl53l0x_data_t data{};
-            if (vl53l0x_get_data(g_sensor, &data) == ESP_OK && data.valid) {
-                const bool candidate = g_present ? data.distance_mm < 900 : data.distance_mm <= 700;
-                bool changed = false;
+            const esp_err_t data_result = vl53l0x_get_data(g_sensor, &data);
+            // Reject invalid status, zero, and physically impossible/out-of-range readings.
+            if (data_result != ESP_OK || !data.valid || data.distance_mm == 0 || data.distance_mm > 2000) {
+                g_invalid_count.fetch_add(1);
+                g_candidate_count = 0;
+            } else {
+                g_has_valid_sample.store(true);
+                g_valid_count.fetch_add(1);
+                g_last_mm.store(data.distance_mm);
+                const bool currently_present = g_present.load();
+                const bool candidate = currently_present
+                    ? data.distance_mm < BELLA_PRESENCE_EXIT_MM
+                    : data.distance_mm <= BELLA_PRESENCE_ENTER_MM;
                 if (candidate) {
                     if (g_candidate_count < 3) ++g_candidate_count;
                 } else {
                     g_candidate_count = 0;
                 }
-                if (g_candidate_count >= 3 && candidate != g_present) {
-                    g_present = candidate;
+                bool changed = false;
+                if (g_candidate_count >= 3 && candidate != currently_present) {
+                    g_present.store(candidate);
                     g_candidate_count = 0;
                     changed = true;
                 }
                 const uint32_t now = static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);
                 if (changed || now - last_report_ms >= 1000) {
-                    bella_set_presence(g_present, data.distance_mm);
+                    bella_set_presence(g_present.load(), data.distance_mm);
                     last_report_ms = now;
                 }
             }
@@ -57,12 +75,7 @@ void bella_distance_init() {
     bus_config.glitch_ignore_cnt = 7;
     bus_config.flags.enable_internal_pullup = true;
     esp_err_t result = i2c_new_master_bus(&bus_config, &g_i2c_bus);
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Could not create VL53L0X I2C bus: %s", esp_err_to_name(result));
-        bella_display_set_state(bella_get_state(), "distance sensor bus unavailable");
-        return;
-    }
-    result = vl53l0x_create(&g_sensor, g_i2c_bus);
+    if (result == ESP_OK) result = vl53l0x_create(&g_sensor, g_i2c_bus);
     if (result == ESP_OK) result = vl53l0x_init(g_sensor);
     if (result == ESP_OK) result = vl53l0x_set_profile(g_sensor, VL53L0X_PROFILE_HIGH_SPEED);
     if (result == ESP_OK) result = vl53l0x_set_mode(g_sensor, VL53L0X_MODE_CONTINUOUS_TIMED);
@@ -74,12 +87,21 @@ void bella_distance_init() {
         g_sensor = nullptr;
         return;
     }
+    g_initialized.store(true);
     if (xTaskCreate(distance_task, "bella_distance", 4096, nullptr, 3, nullptr) != pdPASS) {
         ESP_LOGE(TAG, "Distance task creation failed");
+        g_initialized.store(false);
         (void)vl53l0x_stop_measurement(g_sensor, 500);
         (void)vl53l0x_destroy(g_sensor);
         g_sensor = nullptr;
         return;
     }
-    ESP_LOGI(TAG, "VL53L0X ranging enabled; presence threshold 700 mm, release 900 mm, 3-sample debounce");
+    ESP_LOGI(TAG, "VL53L0X ready; enter=%u mm exit=%u mm, 3-sample debounce",
+             static_cast<unsigned>(BELLA_PRESENCE_ENTER_MM), static_cast<unsigned>(BELLA_PRESENCE_EXIT_MM));
 }
+
+bool bella_distance_initialized() { return g_initialized.load(); }
+bool bella_distance_has_valid_sample() { return g_has_valid_sample.load(); }
+uint16_t bella_distance_last_mm() { return g_last_mm.load(); }
+uint32_t bella_distance_invalid_count() { return g_invalid_count.load(); }
+uint32_t bella_distance_valid_count() { return g_valid_count.load(); }

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from contextlib import aclosing
 from pathlib import Path
 from time import perf_counter
 from collections.abc import AsyncIterator
@@ -17,6 +18,7 @@ from app.services.request_limits import provider_slot
 from app.services.mp3_stream import first_valid_mp3_prefix
 
 logger = logging.getLogger(__name__)
+EDGE_FIRST_AUDIO_TIMEOUT_SECONDS = 5.0
 
 
 class EdgeTTSService:
@@ -121,14 +123,19 @@ class EdgeTTSService:
                 bytes=total_bytes,
             )
 
-        encoded = encoded_audio()
-        prefix = await first_valid_mp3_prefix(encoded)
-        mark_voice_stage(
-            "tts_provider_valid_mp3_prefix",
-            provider="edge",
-            bytes=len(prefix),
-            minimum_frames=2,
-        )
-        yield TTSAudioChunk(provider="edge", data=prefix)
-        async for data in encoded:
-            yield TTSAudioChunk(provider="edge", data=data)
+        async with aclosing(encoded_audio()) as encoded:
+            try:
+                async with asyncio.timeout(EDGE_FIRST_AUDIO_TIMEOUT_SECONDS):
+                    prefix = await first_valid_mp3_prefix(encoded)
+            except TimeoutError as error:
+                logger.warning("Edge TTS timed out waiting for a valid MP3 prefix")
+                raise RuntimeError("Edge TTS timed out before playable audio") from error
+            mark_voice_stage(
+                "tts_provider_valid_mp3_prefix",
+                provider="edge",
+                bytes=len(prefix),
+                minimum_frames=2,
+            )
+            yield TTSAudioChunk(provider="edge", data=prefix)
+            async for data in encoded:
+                yield TTSAudioChunk(provider="edge", data=data)

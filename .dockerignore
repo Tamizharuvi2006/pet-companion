@@ -2,6 +2,11 @@
 .gitignore
 .env
 firmware/
+artifacts/
+tmp/
+output/
+*.tex
+Bella_Research_Review_Changes.txt
 docs/
 **/secrets.h
 .venv

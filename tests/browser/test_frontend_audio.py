@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -36,7 +37,7 @@ class _FixtureAI:
 
     async def stream_reply(self, _messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.turns += 1
-        yield "Hello there!"
+        yield "You did great; "
         await asyncio.sleep(0.55)
         yield (
             " Here is a clean second phrase to test the browser audio stream and make "
@@ -90,6 +91,9 @@ def test_real_edge_media_source_plays_ordered_generated_mp3_while_llm_continues(
     monkeypatch.setenv("TTS_FIRST_CHUNK_WORDS", "6")
     monkeypatch.setenv("VOICE_DIAGNOSTIC_MODE", "false")
     monkeypatch.setenv("BOUNDED_FULL_VOICE_TEST", "false")
+    # This acceptance fixture verifies the legacy GPT text + MP3 TTS pipeline;
+    # keep it explicit now that Audio Mini is the application default.
+    monkeypatch.setenv("VOICE_ENGINE_DEFAULT", "current")
     get_settings.cache_clear()
     tracks = [
         _generated_mp3(tmp_path / f"tone-{frequency}.mp3", frequency)
@@ -148,6 +152,8 @@ def test_real_edge_media_source_plays_ordered_generated_mp3_while_llm_continues(
                 page.add_init_script(
                     """(() => {
                       window.__bellaVoiceEvents = [];
+                      window.__bellaExpressions = [];
+                      window.addEventListener('bella-expression',event=>window.__bellaExpressions.push(event.detail));
                       const original = console.info.bind(console);
                       console.info = (...args) => {
                         if (args[0] === '[bella_voice_timing]' && typeof args[1] === 'string') {
@@ -158,6 +164,10 @@ def test_real_edge_media_source_plays_ordered_generated_mp3_while_llm_continues(
                     })();"""
                 )
                 page.goto(base_url, wait_until="domcontentloaded")
+                page.locator("#voice-engine").select_option("current")
+                face_page=context.new_page()
+                face_page.goto(base_url+'/face.html',wait_until='domcontentloaded')
+                face_page.select_option('#face-mode','browser')
                 page.locator("#status").get_by_text("Ready", exact=True).wait_for(timeout=10_000)
                 supported = page.evaluate("MediaSource.isTypeSupported('audio/mpeg')")
                 if not supported:
@@ -220,6 +230,16 @@ def test_real_edge_media_source_plays_ordered_generated_mp3_while_llm_continues(
                     )
 
                 events = page.evaluate("window.__bellaVoiceEvents")
+                expressions=page.evaluate('window.__bellaExpressions')
+                names=[event['expression'] for event in expressions]
+                assert names.index('listening') < names.index('thinking') < names.index('speaking')
+                assert all(event['destination']=='browser' for event in expressions)
+                assert all('text' not in event and 'token' not in event for event in expressions)
+                if scenario=='success':
+                    face_page.wait_for_function("document.querySelector('#state').textContent==='IDLE'")
+                    assert page.evaluate('BellaExpressions.controller.current()')=='idle'
+                elif scenario=='browser_error':
+                    assert 'error' in names
                 stages = [event["stage"] for event in events]
                 playback_started = stages.index("first_playback_started")
                 reply_finished = stages.index("reply_complete_received")
@@ -253,6 +273,14 @@ def test_real_edge_media_source_plays_ordered_generated_mp3_while_llm_continues(
                     assert stages.index("playback_completed") > reply_finished
                     assert "playback_waiting_for_audio" not in stages
                 assert not page_errors, f"browser JavaScript errors: {page_errors}"
+                if scenario == "success" and (capture := os.getenv("BELLA_OFFLINE_SCREENSHOT")):
+                    page.set_viewport_size({"width": 860, "height": 560})
+                    page.screenshot(path=capture, animations="disabled")
+                    page.set_viewport_size({"width": 390, "height": 760})
+                    assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+                    assert page.locator("#text-input").is_visible()
+                    mobile = Path(capture)
+                    page.screenshot(path=mobile.with_stem(mobile.stem + "-mobile"), animations="disabled")
                 if scenario == "success":
                     assert not {
                         "media_source_error", "media_append_error", "media_pending_limit",
@@ -269,6 +297,8 @@ def test_real_edge_media_source_plays_ordered_generated_mp3_while_llm_continues(
                     )
                 }
                 if scenario == "success":
+                    stages_by_name = {event["stage"]: event for event in events}
+                    assert 0 <= stages_by_name["final_transcript_received"]["since_recording_stop_ms"] <= stages_by_name["first_playback_started"]["since_recording_stop_ms"]
                     offsets["playback_completed"] = next(
                         event["offset_ms"]
                         for event in events
@@ -289,6 +319,40 @@ def test_real_edge_media_source_plays_ordered_generated_mp3_while_llm_continues(
                     "audio_stream_ends": stages.count("audio_chunk_stream_end_received"),
                 }
                 print("browser_acceptance_metrics=" + json.dumps(metrics, sort_keys=True))
+                if scenario == "success":
+                    page.reload(wait_until="domcontentloaded")
+                    page.locator("#status").get_by_text("Ready", exact=True).wait_for()
+                    page.set_viewport_size({"width": 1920, "height": 980})
+                    page.locator("#history-drawer").wait_for(state="visible")
+                    assert page.locator("[data-pet-sound]").count() == 1
+                    assert page.locator("#text-input").evaluate(
+                        "(el) => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }"
+                    )
+                    saved = page.locator("#history-list").get_by_role("button", name="hello bella", exact=True)
+                    saved.click()
+                    page.locator(".message.assistant").get_by_role("button", name="Copy", exact=True).wait_for()
+                    page.locator(".message.assistant").get_by_role("button", name="Read aloud", exact=True).wait_for()
+                    page.locator("#new-chat").click()
+                    assert page.locator(".message").count() == 0
+                    if capture := os.getenv("BELLA_OFFLINE_SCREENSHOT"):
+                        page.set_viewport_size({"width": 1120, "height": 680})
+                        page.locator("#status").get_by_text("Ready", exact=True).wait_for()
+                        target = Path(capture)
+                        page.screenshot(path=target.with_stem(target.stem + "-welcome"), animations="disabled")
+                    composer = page.locator("#text-input")
+                    composer.fill("First line")
+                    composer.press("End")
+                    composer.press("Shift+Enter")
+                    composer.press("S")
+                    assert composer.input_value() == "First line\nS"
+                    page.locator("#history-list summary").click()
+                    page.once("dialog", lambda dialog: dialog.accept("Playback check"))
+                    page.get_by_role("button", name="Rename", exact=True).click()
+                    page.locator("#history-list").get_by_role("button", name="Playback check").wait_for()
+                    page.locator("#history-list summary").click()
+                    page.once("dialog", lambda dialog: dialog.accept())
+                    page.get_by_role("button", name="Delete", exact=True).click()
+                    assert page.locator("#history-list").inner_text() == "No saved chats yet."
             finally:
                 browser.close()
     finally:

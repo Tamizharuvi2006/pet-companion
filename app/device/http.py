@@ -62,8 +62,8 @@ async def capture_camera(
     """Proxy one JPEG from the configured camera; callers cannot supply a URL."""
     _authorize(request, device_id, authorization)
     settings = request.app.state.settings
-    if not settings.camera_enabled or not settings.camera_base_url or not settings.camera_token:
-        raise HTTPException(status_code=503, detail="Camera capture is not configured")
+    if not settings.camera_transport_ready:
+        raise HTTPException(status_code=503, detail="Camera capture is not configured with an approved transport")
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:

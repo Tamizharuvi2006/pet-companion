@@ -65,6 +65,23 @@ def test_face_browser_auth_and_origin(monkeypatch):
         assert client.post('/api/face/unknown/expression',json={'expression':'idle'},headers={'Origin':'https://bella.example'}).status_code==404
 
 
+def test_hardware_doctor_requires_owner_login_and_omits_device_token(monkeypatch):
+    monkeypatch.setenv('ENVIRONMENT','production')
+    monkeypatch.setenv('BELLA_ACCESS_PASSWORD','offline-password-long-enough')
+    monkeypatch.setenv('BELLA_SESSION_SECRET','s'*48)
+    monkeypatch.setenv('BELLA_ALLOWED_ORIGINS','https://bella.example')
+    monkeypatch.setenv('BELLA_DEVICE_TOKENS',f'bella={TOKEN}')
+    get_settings.cache_clear()
+    with TestClient(app,base_url='https://bella.example') as client:
+        assert client.get('/api/face/devices/doctor').status_code==401
+        assert client.post('/auth/login',json={'password':'offline-password-long-enough'},headers={'Origin':'https://bella.example'}).status_code==200
+        response=client.get('/api/face/devices/doctor')
+        assert response.status_code==200
+        report=response.json()[0]
+        assert report['device_id']=='bella' and report['overall']=='PENDING'
+        assert TOKEN not in response.text
+
+
 def test_face_registry_latest_bounded_and_disconnect():
     async def run():
         registry=DeviceRegistry()

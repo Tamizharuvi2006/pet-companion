@@ -21,6 +21,7 @@ def test_voice_diagnostic_labels_first_phrase_and_never_queues_second(
         whisper_interim_enabled=False,
         tts_race_enabled=False,
         storage_dir=tmp_path,
+        voice_engine_default="current",
     )
     monkeypatch.setattr("app.main.get_settings", lambda: settings)
     tts_texts: list[str] = []
@@ -111,6 +112,7 @@ def test_bounded_full_voice_mode_sends_complete_reply_and_consumes_shared_latch(
         whisper_interim_enabled=False,
         tts_race_enabled=False,
         storage_dir=tmp_path,
+        voice_engine_default="current",
     )
     monkeypatch.setattr("app.main.get_settings", lambda: settings)
 

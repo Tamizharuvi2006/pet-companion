@@ -12,7 +12,7 @@ The token is compared against `BELLA_DEVICE_TOKENS` on the server and is never p
 
 ## Control messages
 
-All JSON control messages carry `type` and `version: 1`. Supported client messages are `hello`, `recording_start`, `recording_end`, `cancel`, `sensor_event`, and `ping`. The server returns `device_ready`, `transcript`, `reply_delta`, `tts_chunk_start`, `tts_chunk_end`, `turn_complete`, `error`, and `pong`.
+All JSON control messages carry `type` and `version: 1`. Supported client messages are `hello`, `recording_start`, `recording_end`, `cancel`, `sensor_event`, and `ping`; caption-capable firmware also sends `display_settings_ack`. The server returns `device_ready`, `transcript`, `reply_delta`, `display_settings`, `tts_chunk_start`, `tts_chunk_end`, `turn_complete`, `error`, and `pong`.
 
 `recording_start` declares the input format exactly:
 
@@ -39,9 +39,31 @@ The normal payload is 1,280 bytes = 640 samples = 40 ms. The final frame may be 
 
 For speaker data, the server sends `tts_chunk_start` before the first binary frame and `tts_chunk_end` after the last frame. `chunk_id` associates each synthesized output with its metadata; frame sequence is scoped to the chunk. The device must discard frames with stale turn IDs, and clear its bounded playback queue on cancel or disconnect. Control and binary frames share one ordered WebSocket; device firmware must process them in order.
 
+## Streaming text and display captions
+
+The device sends `caption_overlay_v1: true` and its persisted
+`display_captions_enabled` state in `hello.capabilities`. For GPT Audio Mini
+turns, every assistant text delta is sent as `reply_delta` with the active
+`turn_id`; the firmware may show it as it arrives. It must not display the user
+`transcript` as Bella's reply. The face animation continues independently. The
+caption overlay is visible only while playback is active and is cleared when
+playback drains, is cancelled, or enters an error state.
+
+To change the preference, the server sends:
+
+```json
+{"type":"display_settings","version":1,"turn_id":42,"command_id":"<32 hex chars>","captions_enabled":false}
+```
+
+The ESP32 applies the setting immediately, clears any old caption, stores it in
+NVS, and responds with `display_settings_ack` containing the setting and a
+`persisted` boolean. If NVS saving fails, it remains active only for the current
+boot and reports `persisted:false`. Firmware without `caption_overlay_v1` must
+not be told by the backend that the voice command succeeded.
+
 ## Runtime behavior
 
-DevKit sends PCM frames while Touch 1 is held/toggled to listening, then sends `recording_end`. The backend rejects oversized/out-of-order input, applies an RMS silence check, wraps PCM in WAV for the existing OpenRouter STT path, retains local Faster-Whisper fallback, and calls the existing shared streaming chat/TTS services. The browser route `/ws/chat` remains a separate WebM protocol and is not changed into a device protocol.
+DevKit sends PCM frames while Touch 1 is held/toggled to listening, then sends `recording_end`. The backend rejects oversized/out-of-order input, applies an RMS silence check, wraps PCM in WAV for the configured OpenRouter STT path, retains local Faster-Whisper fallback, and streams reply text/audio using the configured default voice engine. In the GPT Audio Mini device path, the provider emits mono 24 kHz PCM; the backend incrementally resamples it to the device's 16 kHz wire format. The browser route `/ws/chat` remains a separate WebM protocol and is not changed into a device protocol.
 
 ## Status APIs
 
