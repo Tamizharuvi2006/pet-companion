@@ -43,6 +43,11 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.validate_public_security()
     settings.validate_voice_diagnostic()
+    if not settings.device_auth_required:
+        logger.warning(
+            "device_auth_disabled: /ws/device accepts tokenless public connections; "
+            "restore BELLA_DEVICE_AUTH_REQUIRED=true after the demo"
+        )
     app.state.diagnostic_session = DiagnosticSessionLatch(
         enabled=settings.voice_test_enabled
     )

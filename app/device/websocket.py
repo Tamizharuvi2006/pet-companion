@@ -78,8 +78,13 @@ async def device_socket(websocket: WebSocket) -> None:
             hello.type != "hello"
             or hello.version != PROTOCOL_VERSION
             or not hello.device_id
-            or not hello.token
-            or not verify_device_token(settings, hello.device_id, hello.token)
+            or (
+                settings.device_auth_required
+                and (
+                    not hello.token
+                    or not verify_device_token(settings, hello.device_id, hello.token)
+                )
+            )
         ):
             await _send_error(websocket, "unauthorized", "Device authentication failed")
             await websocket.close(code=4401)

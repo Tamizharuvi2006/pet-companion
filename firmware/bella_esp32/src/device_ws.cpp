@@ -301,7 +301,7 @@ static bool start_client() {
     if(!bella_backend_url_is_valid_wss(bella_provision_backend_url())){
         ESP_LOGE(TAG,"Secure wss:// backend URL required");return false;
     }
-    if (!bella_provision_ready() || std::strlen(bella_provision_device_token()) < 16) {
+    if (!bella_provision_ready()) {
         ESP_LOGE(TAG, "Device provisioning is missing or invalid");
         return false;
     }

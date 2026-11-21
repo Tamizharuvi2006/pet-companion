@@ -20,10 +20,12 @@ DEVICE_ID = "unit-test-device"
 DEVICE_TOKEN = "test-device-token-long-enough-for-schema"
 
 
-def _app(tmp_path) -> FastAPI:
+def _app(tmp_path, *, device_auth_required: bool = True) -> FastAPI:
     app = FastAPI()
     app.state.settings = Settings(
-        device_auth_tokens={DEVICE_ID: DEVICE_TOKEN}, storage_dir=tmp_path
+        device_auth_tokens={DEVICE_ID: DEVICE_TOKEN},
+        device_auth_required=device_auth_required,
+        storage_dir=tmp_path,
     )
     app.state.device_registry = DeviceRegistry()
     app.include_router(device_websocket_router)
@@ -110,6 +112,49 @@ def test_websocket_requires_device_token_and_accepts_silence_guard(tmp_path) -> 
             messages = [websocket.receive_json(), websocket.receive_json()]
             assert [message["type"] for message in messages] == ["error", "turn_complete"]
             assert messages[0]["code"] == "silent_audio"
+
+
+def test_websocket_rejects_missing_device_token_by_default(tmp_path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/device") as websocket:
+            websocket.send_json(
+                {"type": "hello", "version": PROTOCOL_VERSION, "device_id": "unlisted-esp"}
+            )
+            assert websocket.receive_json()["code"] == "unauthorized"
+
+
+def test_websocket_demo_mode_accepts_any_valid_device_id_without_token(tmp_path) -> None:
+    app = _app(tmp_path, device_auth_required=False)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/device") as websocket:
+            websocket.send_json(
+                {
+                    "type": "hello",
+                    "version": PROTOCOL_VERSION,
+                    "device_id": "presentation-esp",
+                    "token": "",
+                    "firmware_version": "demo",
+                }
+            )
+            ready = websocket.receive_json()
+            assert ready["type"] == "device_ready"
+            assert ready["device_id"] == "presentation-esp"
+
+
+def test_device_token_requirement_can_be_disabled_only_explicitly(monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BELLA_DEVICE_AUTH_REQUIRED", "true")
+    get_settings.cache_clear()
+    assert get_settings().device_auth_required is True
+    monkeypatch.setenv("BELLA_DEVICE_AUTH_REQUIRED", "typo")
+    get_settings.cache_clear()
+    assert get_settings().device_auth_required is True
+    monkeypatch.setenv("BELLA_DEVICE_AUTH_REQUIRED", "false")
+    get_settings.cache_clear()
+    assert get_settings().device_auth_required is False
+    get_settings.cache_clear()
 
 
 def test_websocket_rejects_replayed_turn_id(tmp_path) -> None:

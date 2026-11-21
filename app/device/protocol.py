@@ -23,7 +23,7 @@ class DeviceMessage(BaseModel):
     type: StrictStr = Field(min_length=1, max_length=40)
     version: StrictInt | None = Field(default=None, ge=1, le=255)
     device_id: StrictStr | None = Field(default=None, min_length=1, max_length=64)
-    token: StrictStr | None = Field(default=None, min_length=16, max_length=256)
+    token: StrictStr | None = Field(default=None, min_length=0, max_length=256)
     firmware_version: StrictStr | None = Field(default=None, max_length=32)
     turn_id: StrictInt | None = Field(default=None, ge=0, le=0xFFFFFFFF)
     sequence: StrictInt | None = Field(default=None, ge=0, le=0xFFFFFFFF)

@@ -65,6 +65,7 @@ class Settings(BaseModel):
     bounded_full_voice_test: bool = False
     tts_voice: str = "en-US-AnaNeural"
     device_auth_tokens: dict[str, str] = Field(default_factory=dict)
+    device_auth_required: bool = True
     device_max_recording_seconds: int = Field(default=15, ge=1, le=60)
     device_max_audio_frame_bytes: int = Field(default=2048, ge=1280, le=2048)
     device_max_image_bytes: int = Field(default=1_000_000, ge=1024, le=10_000_000)
@@ -277,6 +278,9 @@ def get_settings() -> Settings:
         in {"1", "true", "yes", "on"},
         tts_voice=os.getenv("TTS_VOICE", "en-US-AnaNeural"),
         device_auth_tokens=device_auth_tokens,
+        # Unknown values fail closed; only an explicit false-like value opens demo WS access.
+        device_auth_required=os.getenv("BELLA_DEVICE_AUTH_REQUIRED", "true").strip().lower()
+        not in {"0", "false", "no", "off"},
         device_max_recording_seconds=int(os.getenv("DEVICE_MAX_RECORDING_SECONDS", "15")),
         device_max_audio_frame_bytes=int(os.getenv("DEVICE_MAX_AUDIO_FRAME_BYTES", "2048")),
         device_max_image_bytes=int(os.getenv("DEVICE_MAX_IMAGE_BYTES", "1000000")),

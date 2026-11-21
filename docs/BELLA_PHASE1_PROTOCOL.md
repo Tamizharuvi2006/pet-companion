@@ -8,7 +8,7 @@ The DevKit opens a WebSocket to `/ws/device`. It sends a `hello` JSON message as
 {"type":"hello","version":1,"device_id":"device-001","token":"<per-device-random-token>","firmware_version":"0.1.0","capabilities":{"audio_in":true,"audio_out":true,"touch":true,"distance":true,"tft":false,"servos":false},"sensors":{}}
 ```
 
-The token is compared against `BELLA_DEVICE_TOKENS` on the server and is never put in a URL. Use `ws://` only on a protected development LAN. For remote/Railway access, use `wss://` with certificate verification enabled and a rotated, unique token per device. Do not log the hello payload.
+By default, the token is compared against `BELLA_DEVICE_TOKENS` on the server and is never put in a URL. For a temporary presentation only, the owner may set `BELLA_DEVICE_AUTH_REQUIRED=false`; then a valid `device_id` can connect with an empty token. This makes the public `/ws/device` endpoint open to any internet client and can incur provider charges, so restore `true` after the demo. Use `ws://` only on a protected development LAN. For remote access, use `wss://` with certificate verification enabled and a rotated, unique token per device. Do not log the hello payload.
 
 ## Control messages
 

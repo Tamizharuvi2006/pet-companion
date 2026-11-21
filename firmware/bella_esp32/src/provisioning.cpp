@@ -51,15 +51,17 @@ bool valid_config(const Config &config) {
            password_length >= 8 && password_length <= 64 &&
            url_length > 12 && url_length <= 192 &&
            bella_backend_url_is_valid_wss(config.backend_url) &&
-           valid_device_id(config.device_id) && token_length >= 16 && token_length <= 192 &&
-           std::strspn(config.device_token, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-") == token_length;
+           valid_device_id(config.device_id) &&
+           (token_length == 0 || (token_length >= 16 && token_length <= 192 &&
+            std::strspn(config.device_token, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-") == token_length));
 }
 
-bool json_string(const cJSON *root, const char *key, char *out, size_t capacity) {
+bool json_string(const cJSON *root, const char *key, char *out, size_t capacity,
+                 bool allow_empty = false) {
     const cJSON *value = cJSON_GetObjectItemCaseSensitive(root, key);
     if (!cJSON_IsString(value) || !value->valuestring) return false;
     const size_t length = std::strlen(value->valuestring);
-    if (length == 0 || length >= capacity) return false;
+    if ((!allow_empty && length == 0) || length >= capacity) return false;
     std::memcpy(out, value->valuestring, length + 1);
     return true;
 }
@@ -96,7 +98,7 @@ bool accept_line(const char *line) {
         json_string(root, "password", candidate.password, sizeof(candidate.password)) &&
         json_string(root, "backend_ws_url", candidate.backend_url, sizeof(candidate.backend_url)) &&
         json_string(root, "device_id", candidate.device_id, sizeof(candidate.device_id)) &&
-        json_string(root, "device_token", candidate.device_token, sizeof(candidate.device_token));
+        json_string(root, "device_token", candidate.device_token, sizeof(candidate.device_token), true);
     cJSON_Delete(root);
     if (!parsed || !valid_config(candidate) || !save_config(candidate)) return false;
     g_config = candidate;

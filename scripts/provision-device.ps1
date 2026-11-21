@@ -43,9 +43,9 @@ Write-Host 'Device credentials are sent over the attached USB serial link and sa
 Write-Warning 'NVS is not flash-encrypted by this firmware. Anyone with physical flash access may be able to recover stored credentials.'
 $ssid = Read-Host 'Wi-Fi SSID'
 $passwordSecure = Read-Host 'Wi-Fi WPA2 password (hidden)' -AsSecureString
-$backend = Read-Host 'Railway WebSocket URL (wss://host/ws/device)'
-$deviceId = Read-Host 'Device ID (must exactly match the server token map)'
-$tokenSecure = Read-Host 'Device token (hidden; must exactly match server configuration)' -AsSecureString
+$backend = Read-Host 'Backend WebSocket URL (wss://host/ws/device)'
+$deviceId = Read-Host 'Device ID (must exactly match the server token map unless demo auth is disabled)'
+$tokenSecure = Read-Host 'Device token (hidden; leave blank only when BELLA_DEVICE_AUTH_REQUIRED=false on the server)' -AsSecureString
 $passwordPtr = [IntPtr]::Zero
 $tokenPtr = [IntPtr]::Zero
 $serial = $null
@@ -56,9 +56,9 @@ try {
     $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPtr)
     if ([string]::IsNullOrWhiteSpace($ssid) -or $ssid.Length -gt 32) { throw 'SSID must be 1-32 characters.' }
     if ($password.Length -lt 8 -or $password.Length -gt 64) { throw 'Wi-Fi password must be 8-64 characters for the configured WPA2 station.' }
-    if ($backend -notmatch '^wss://[^/]+/ws/device$') { throw 'Use the exact secure Railway URL: wss://<host>/ws/device' }
+    if ($backend -notmatch '^wss://[^/]+/ws/device$') { throw 'Use the exact secure backend URL: wss://<host>/ws/device' }
     if ($deviceId -notmatch '^[A-Za-z0-9._-]{1,64}$') { throw 'Device ID may contain only letters, digits, dot, underscore, and hyphen.' }
-    if ($token.Length -lt 16 -or $token.Length -gt 192 -or $token -notmatch '^[A-Za-z0-9._~-]+$') { throw 'Token must be 16-192 URL-safe characters.' }
+    if ($token.Length -gt 0 -and ($token.Length -lt 16 -or $token.Length -gt 192 -or $token -notmatch '^[A-Za-z0-9._~-]+$')) { throw 'Token must be blank for explicit demo mode or 16-192 URL-safe characters.' }
 
     $payload = @{ ssid=$ssid; password=$password; backend_ws_url=$backend; device_id=$deviceId; device_token=$token } | ConvertTo-Json -Compress
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
@@ -91,7 +91,11 @@ try {
         } catch [TimeoutException] { }
     }
     if (-not $saved) { throw 'The device did not confirm provisioning. No credentials were printed; check the input constraints and retry.' }
-    Write-Host "Provisioned device '$deviceId'. Configure the matching token in the server's BELLA_DEVICE_TOKENS variable before expecting cloud authentication."
+    if ($token.Length -eq 0) {
+        Write-Warning "Provisioned '$deviceId' without a token. This works only while BELLA_DEVICE_AUTH_REQUIRED=false on the server; turn it back on after the demo."
+    } else {
+        Write-Host "Provisioned device '$deviceId'. Configure its matching token in BELLA_DEVICE_TOKENS on the server."
+    }
 } finally {
     if ($serial -and $serial.IsOpen) { $serial.Close() }
     if ($passwordPtr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPtr) }
